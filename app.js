@@ -1,0 +1,396 @@
+/**
+ * Jarvis on the phone. Talks to the Jarvis bridge on the PC through two
+ * private ntfy.sh topics, every message AES-GCM sealed with the key from the
+ * pairing link (it lives only in this phone and on the PC). Messages typed
+ * while the PC is off wait at ntfy (12 h) until Jarvis starts.
+ */
+const RELAY = 'https://ntfy.sh'
+const $ = (s) => document.querySelector(s)
+const store = {
+  get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch { /* private mode */ } },
+}
+
+// ---------- pairing ----------
+function readPair(src) {
+  const h = new URLSearchParams(String(src).split('#')[1] ?? '')
+  const p = { k: h.get('k'), i: h.get('i'), o: h.get('o') }
+  return p.k && p.i && p.o ? p : null
+}
+let pair = readPair(location.href) ?? store.get('jv-pair', null)
+if (pair) store.set('jv-pair', pair)
+
+// ---------- crypto ----------
+const b64u = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)),
+}
+let keyP = null
+const key = () => (keyP ??= crypto.subtle.importKey('raw', b64u.dec(pair.k), 'AES-GCM', false, ['encrypt', 'decrypt']))
+async function seal(obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await key(), new TextEncoder().encode(JSON.stringify(obj)))
+  const out = new Uint8Array(12 + ct.byteLength)
+  out.set(iv)
+  out.set(new Uint8Array(ct), 12)
+  return b64u.enc(out)
+}
+async function open(text) {
+  const raw = b64u.dec(String(text).trim())
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, await key(), raw.slice(12))
+  return JSON.parse(new TextDecoder().decode(pt))
+}
+
+// ---------- state ----------
+let list = store.get('jv-list', null) // { at, tasks, reminders }
+let chat = store.get('jv-chat', []) // { id, me, text, at, status }
+let pendingDone = store.get('jv-pending', {}) // taskId -> true|false while the PC hasn't confirmed
+let lastSeen = store.get('jv-seen', 0) // when Jarvis last answered anything
+let lastId = store.get('jv-last', null)
+let tab = 'list'
+let unread = 0
+const saveChat = () => store.set('jv-chat', chat.slice(-120))
+const online = () => Date.now() - lastSeen < 150_000
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
+async function publish(obj) {
+  const r = await fetch(`${RELAY}/${pair.i}`, { method: 'POST', body: await seal(obj) })
+  if (!r.ok) throw new Error(`relay ${r.status}`)
+}
+
+// ---------- relay in ----------
+let es = null
+function subscribe() {
+  es?.close()
+  es = new EventSource(`${RELAY}/${pair.o}/sse?since=${lastId ?? '12h'}`)
+  es.onmessage = async (e) => {
+    let ev
+    try { ev = JSON.parse(e.data) } catch { return }
+    if (ev.event !== 'message') return
+    lastId = ev.id
+    store.set('jv-last', lastId)
+    let m
+    try { m = await open(ev.message) } catch { return }
+    receive(m, ev.time * 1000)
+  }
+  es.onerror = () => setStatus()
+}
+
+function receive(m, time) {
+  const fresh = Date.now() - time < 150_000
+  if (fresh) {
+    lastSeen = Math.max(lastSeen, time)
+    store.set('jv-seen', lastSeen)
+  }
+  if (m.t === 'state') {
+    if (!list || m.at >= list.at) {
+      list = m
+      store.set('jv-list', list)
+      // Anything the PC now agrees with is no longer pending.
+      for (const t of list.tasks) if (t.id in pendingDone && Boolean(t.done) === pendingDone[t.id]) delete pendingDone[t.id]
+      store.set('jv-pending', pendingDone)
+      renderList()
+    }
+  } else if (m.t === 'ack') {
+    const mine = chat.find((c) => c.id === m.to)
+    if (mine && mine.status !== 'replied') mine.status = 'ack'
+    saveChat()
+    renderChat()
+  } else if (m.t === 'reply') {
+    if (chat.some((c) => c.reply === m.to)) return
+    const mine = chat.find((c) => c.id === m.to)
+    if (mine) mine.status = 'replied'
+    chat.push({ id: uid(), me: false, text: m.text, at: m.at ?? time, reply: m.to })
+    saveChat()
+    if (tab !== 'chat') { unread++; toast(m.text.length > 70 ? m.text.slice(0, 68) + '…' : m.text) }
+    renderChat()
+  }
+  setStatus()
+}
+
+// ---------- status ----------
+function setStatus() {
+  const el = $('#status')
+  const on = online()
+  el.className = `status ${on ? 'on' : 'off'}`
+  el.querySelector('span').textContent = on ? 'Online' : lastSeen ? `Asleep · seen ${ago(lastSeen)}` : 'Asleep · will get it when your PC is on'
+}
+let pingAt = 0
+function ping() {
+  if (Date.now() - pingAt < 20_000) return
+  pingAt = Date.now()
+  publish({ t: 'ping', at: Date.now() }).catch(() => {})
+}
+
+// ---------- sending ----------
+async function sendText(text) {
+  text = text.trim()
+  if (!text) return
+  const m = { id: uid(), me: true, text, at: Date.now(), status: 'sending' }
+  chat.push(m)
+  saveChat()
+  showTab('chat')
+  renderChat()
+  try {
+    await publish({ t: 'msg', id: m.id, text, at: m.at })
+    m.status = 'sent'
+  } catch {
+    m.status = 'failed'
+  }
+  saveChat()
+  renderChat()
+  ping()
+}
+// Anything never acknowledged, about to fall out of the relay's 12 h memory, goes again.
+async function resendOld() {
+  for (const m of chat) {
+    if (!m.me) continue
+    const age = Date.now() - m.at
+    if (m.status === 'failed' || (m.status === 'sent' && age > 11 * 3600_000 && age < 72 * 3600_000 && Date.now() - (m.resent ?? 0) > 11 * 3600_000)) {
+      try {
+        await publish({ t: 'msg', id: m.id, text: m.text, at: m.at })
+        m.status = 'sent'
+        m.resent = Date.now()
+      } catch { /* next time */ }
+    }
+  }
+  saveChat()
+}
+async function toggleTask(t) {
+  const want = !(t.id in pendingDone ? pendingDone[t.id] : t.done)
+  pendingDone[t.id] = want
+  store.set('jv-pending', pendingDone)
+  renderList()
+  try {
+    await publish({ t: want ? 'done' : 'undo', id: uid(), task: t.id })
+    if (!online()) toast(want ? 'Checked off. Jarvis will update when your PC is on.' : 'Unchecked.')
+  } catch {
+    delete pendingDone[t.id]
+    store.set('jv-pending', pendingDone)
+    renderList()
+    toast("Couldn't reach the relay. Check your connection.")
+  }
+}
+
+// ---------- rendering ----------
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+const CAT = { SCHOOL: '#19e3ff', FILM: '#ff4d5e', DESIGN: '#b48cff', SCOUTS: '#3ddc84', PERSONAL: '#f0a93c' }
+function ago(t) {
+  const s = Math.round((Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.round(s / 60)} min ago`
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`
+  return `${Math.round(s / 86400)} d ago`
+}
+function dueOf(due) {
+  if (!due) return null
+  const dateOnly = due.length === 10
+  const d = new Date(dateOnly ? `${due}T23:59` : due)
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const day = new Date(d); day.setHours(0, 0, 0, 0)
+  const diff = Math.round((day - today) / 86400000)
+  const time = dateOnly ? '' : ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  if (d < Date.now()) return { text: diff === 0 ? `Due today${time}` : 'Overdue', cls: diff === 0 ? 'today' : 'late' }
+  if (diff === 0) return { text: `Today${time}`, cls: 'today' }
+  if (diff === 1) return { text: `Tomorrow${time}`, cls: 'soon' }
+  if (diff < 7) return { text: d.toLocaleDateString([], { weekday: 'long' }) + time, cls: '' }
+  return { text: d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + time, cls: '' }
+}
+const CHECK = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
+const BELL = '<svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/></svg>'
+
+function renderList() {
+  const tasks = list?.tasks ?? []
+  const open = tasks.filter((t) => !(t.id in pendingDone ? pendingDone[t.id] : t.done))
+  $('#count').textContent = open.length || ''
+  $('#synced').textContent = list ? `Synced ${ago(list.at)}` : ''
+  $('#reminders').innerHTML = (list?.reminders ?? [])
+    .map((r) => `<div class="reminder">${BELL}<span>${esc(r.text)}</span><span class="when">${esc(new Date(r.at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}</span></div>`)
+    .join('')
+  if (!tasks.length) {
+    $('#tasks').innerHTML = list
+      ? '<div class="empty"><b>ALL CLEAR</b>Nothing on the list. Type below to add something.</div>'
+      : '<div class="empty"><b>NO LIST YET</b>Your list shows up here once Jarvis is on. You can still send him things now.</div>'
+    return
+  }
+  const groups = {}
+  for (const t of tasks) (groups[t.category] ??= []).push(t)
+  let i = 0
+  $('#tasks').innerHTML = Object.entries(groups)
+    .map(([cat, ts]) => {
+      const left = ts.filter((t) => !(t.id in pendingDone ? pendingDone[t.id] : t.done)).length
+      return `<div class="group"><h3>${esc(cat)} <span>${left}</span></h3>${ts
+        .map((t) => {
+          const done = t.id in pendingDone ? pendingDone[t.id] : t.done
+          const due = dueOf(t.due)
+          return `<div class="task${done ? ' done' : ''}${t.id in pendingDone ? ' pending' : ''}" style="--c:${CAT[cat] ?? '#19e3ff'};animation-delay:${i++ * 30}ms">
+            <button class="check" data-id="${esc(t.id)}" aria-label="Done">${CHECK}</button>
+            <div class="body"><div class="title">${esc(t.title)}</div>${due || t.effort ? `<div class="meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}${t.effort && !done ? `<span>${esc(t.effort)}</span>` : ''}</div>` : ''}</div>
+          </div>`
+        })
+        .join('')}</div>`
+    })
+    .join('')
+}
+
+function renderChat() {
+  $('#unread').textContent = unread || ''
+  const el = $('#chat')
+  if (!chat.length) {
+    el.innerHTML = '<div class="empty"><b>TALK TO JARVIS</b>Anything you\'d say out loud works here:<br>"chem quiz Thursday", "finished the bio lab",<br>"remind me at 6 to email Mr. Lee".</div>'
+    return
+  }
+  let lastDay = ''
+  const parts = []
+  for (const m of chat) {
+    const day = new Date(m.at).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })
+    if (day !== lastDay) parts.push(`<div class="day">${esc(day)}</div>`)
+    lastDay = day
+    if (m.me) {
+      const tick = { sending: 'Sending…', sent: online() ? 'Sent' : 'Waiting for PC', ack: 'Jarvis got it', replied: '', failed: 'Not sent · will retry' }[m.status] ?? ''
+      parts.push(`<div class="msg me">${esc(m.text)}${tick ? `<span class="tick ${m.status === 'ack' ? 'ack' : ''}">${tick}</span>` : ''}</div>`)
+    } else parts.push(`<div class="msg jv">${esc(m.text)}</div>`)
+  }
+  if (chat.some((m) => m.me && m.status === 'ack')) parts.push('<div class="typing"><i></i><i></i><i></i></div>')
+  el.innerHTML = parts.join('')
+  if (tab === 'chat') requestAnimationFrame(() => ($('#view-chat').scrollTop = 1e9))
+}
+
+function showTab(t) {
+  tab = t
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === t))
+  $('.tabs').dataset.on = t
+  $('#view-list').classList.toggle('on', t === 'list')
+  $('#view-chat').classList.toggle('on', t === 'chat')
+  if (t === 'chat') { unread = 0; renderChat() }
+}
+
+let toastTimer
+function toast(text) {
+  const el = $('#toast')
+  el.textContent = text
+  el.classList.add('show')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200)
+}
+
+// ---------- globe ----------
+function globe(canvas) {
+  const ctx = canvas.getContext('2d')
+  const N = canvas.classList.contains('big') ? 420 : 160
+  const pts = Array.from({ length: N }, (_, i) => {
+    const y = 1 - (i / (N - 1)) * 2
+    const r = Math.sqrt(1 - y * y)
+    const a = i * 2.399963
+    return [Math.cos(a) * r, y, Math.sin(a) * r]
+  })
+  let last = 0
+  const draw = (now) => {
+    requestAnimationFrame(draw)
+    if (document.hidden || now - last < 33) return
+    last = now
+    const dpr = Math.min(devicePixelRatio || 1, 2)
+    const w = canvas.clientWidth
+    if (canvas.width !== w * dpr) { canvas.width = canvas.height = w * dpr }
+    const s = canvas.width, c = s / 2, R = s * 0.34
+    ctx.clearRect(0, 0, s, s)
+    const g = ctx.createRadialGradient(c, c, 0, c, c, R * 1.4)
+    g.addColorStop(0, 'rgba(25,227,255,0.22)')
+    g.addColorStop(1, 'rgba(25,227,255,0)')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, s, s)
+    const t = now / 1000, ry = t * 0.5, tilt = 0.4
+    for (const [x, y, z] of pts) {
+      const x1 = x * Math.cos(ry) + z * Math.sin(ry)
+      const z1 = -x * Math.sin(ry) + z * Math.cos(ry)
+      const y2 = y * Math.cos(tilt) - z1 * Math.sin(tilt)
+      const z2 = y * Math.sin(tilt) + z1 * Math.cos(tilt)
+      const a = 0.15 + 0.85 * ((z2 + 1) / 2)
+      ctx.fillStyle = `rgba(${130 + 100 * a | 0},${235},255,${a})`
+      ctx.beginPath()
+      ctx.arc(c + x1 * R, c + y2 * R, s * 0.008 * (0.6 + a), 0, 7)
+      ctx.fill()
+    }
+    ctx.strokeStyle = 'rgba(25,227,255,0.55)'
+    ctx.lineWidth = s * 0.008
+    ctx.beginPath()
+    ctx.ellipse(c, c, R * 1.32, R * 0.36, -0.35, t * 0.8, t * 0.8 + 4.4)
+    ctx.stroke()
+    ctx.strokeStyle = 'rgba(25,227,255,0.25)'
+    ctx.beginPath()
+    ctx.arc(c, c, R * 1.18, -t * 0.6, -t * 0.6 + 2.2)
+    ctx.stroke()
+  }
+  requestAnimationFrame(draw)
+}
+
+// ---------- wiring ----------
+document.querySelectorAll('[data-globe]').forEach(globe)
+
+function start() {
+  $('#pair').hidden = true
+  $('#app').hidden = false
+  renderList()
+  renderChat()
+  setStatus()
+  subscribe()
+  ping()
+  resendOld()
+  setInterval(() => { setStatus(); renderList() }, 30_000)
+}
+
+if (!pair) {
+  $('#pair').hidden = false
+  $('#pairBtn').onclick = () => {
+    const p = readPair($('#pairInput').value)
+    if (!p) return toast("That isn't a Jarvis pairing link.")
+    pair = p
+    store.set('jv-pair', p)
+    start()
+  }
+} else start()
+
+document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)))
+$('#tasks').addEventListener('click', (e) => {
+  const b = e.target.closest('.check')
+  if (!b) return
+  const t = list?.tasks.find((x) => x.id === b.dataset.id)
+  if (t) toggleTask(t)
+})
+const input = $('#input')
+const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; $('#send').disabled = !input.value.trim() }
+input.addEventListener('input', grow)
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#form').requestSubmit() }
+})
+$('#form').onsubmit = (e) => {
+  e.preventDefault()
+  const text = input.value
+  input.value = ''
+  grow()
+  sendText(text)
+}
+$('#chips').addEventListener('click', (e) => {
+  const b = e.target.closest('button')
+  if (!b) return
+  if (b.dataset.say) return sendText(b.dataset.say)
+  input.value = b.dataset.fill
+  grow()
+  input.focus()
+})
+$('#refresh').onclick = () => {
+  const b = $('#refresh')
+  b.classList.add('spin')
+  pingAt = 0
+  ping()
+  subscribe()
+  setTimeout(() => b.classList.remove('spin'), 1500)
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !pair) return
+  subscribe() // iOS drops the stream in the background
+  ping()
+  resendOld()
+})
+grow()
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {})

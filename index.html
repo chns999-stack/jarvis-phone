@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <title>Jarvis</title>
+  <meta name="theme-color" content="#01060c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Jarvis" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="icon" href="icon-192.png" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+
+  <!-- Pairing: shown until this phone has the key from the PC's pairing code. -->
+  <section id="pair" class="pair" hidden>
+    <canvas class="globe big" data-globe></canvas>
+    <h1>J.A.R.V.I.S.</h1>
+    <p>Scan the pairing code on your PC with the iPhone camera, then in Safari tap <b>Share → Add to Home Screen</b>.</p>
+    <details>
+      <summary>Paste a pairing link instead</summary>
+      <input id="pairInput" placeholder="https://…#k=…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+      <button id="pairBtn" class="btn">Pair</button>
+    </details>
+  </section>
+
+  <main id="app" hidden>
+    <header class="top">
+      <canvas class="globe" data-globe></canvas>
+      <div class="id">
+        <div class="name">J.A.R.V.I.S.</div>
+        <div id="status" class="status off"><i></i><span>Connecting…</span></div>
+      </div>
+      <button id="refresh" class="icon-btn" aria-label="Refresh">
+        <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg>
+      </button>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab on" data-tab="list" role="tab">To-do<b id="count"></b></button>
+      <button class="tab" data-tab="chat" role="tab">Chat<b id="unread"></b></button>
+      <span class="glider"></span>
+    </nav>
+
+    <div class="views">
+      <section id="view-list" class="view on">
+        <div id="synced" class="synced"></div>
+        <div id="reminders"></div>
+        <div id="tasks"></div>
+      </section>
+      <section id="view-chat" class="view">
+        <div id="chat" class="chat"></div>
+      </section>
+    </div>
+
+    <footer class="compose">
+      <div class="chips" id="chips">
+        <button data-say="What's due this week?">What's due?</button>
+        <button data-fill="Add homework: ">+ Homework</button>
+        <button data-fill="Remind me ">Remind me</button>
+        <button data-fill="I finished ">Finished…</button>
+      </div>
+      <form id="form" class="bar">
+        <textarea id="input" rows="1" placeholder="Tell Jarvis…" enterkeyhint="send"></textarea>
+        <button id="send" class="send" aria-label="Send">
+          <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z" /></svg>
+        </button>
+      </form>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
