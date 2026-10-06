@@ -27,7 +27,7 @@ async function relayFetch(topic, opts) {
   return fetch(`${BACKUP}/${topic}`, opts)
 }
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 16
+const VERSION = 17
 // The design file must be the one this code was written for: the home-screen app
 // can hold an older saved copy. A version stamp on its address forces the right one.
 ;(() => {
@@ -1415,12 +1415,14 @@ setupFocus()
 
 // ---------- the top bar hides while scrolling down, comes back scrolling up ----------
 document.querySelectorAll('.view').forEach((v) => {
-  let last = 0
+  // By position, with a gap between the two thresholds, so it can't flicker.
   v.addEventListener('scroll', () => {
     const y = v.scrollTop
-    if (y > last + 6 && y > 40) document.body.classList.add('scrolled')
-    else if (y < last - 6 || y < 20) document.body.classList.remove('scrolled')
-    last = y
+    if (y > 48) document.body.classList.add('scrolled')
+    else if (y < 8) document.body.classList.remove('scrolled')
   }, { passive: true })
 })
-document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => document.body.classList.remove('scrolled')))
+document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
+  const v = document.querySelector(`#view-${b.dataset.tab}`)
+  document.body.classList.toggle('scrolled', Boolean(v && v.scrollTop > 48))
+}))

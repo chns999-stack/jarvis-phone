@@ -377,3 +377,13 @@ main { position: relative; z-index: 1; height: var(--vvh, 100%); display: flex; 
 }
 .island.open { top: max(calc(env(safe-area-inset-top, 0px) + 6px), 56px); border-radius: 30px; }
 .island-in { padding: 16px 22px 16px 18px; font-size: 16px; }
+
+/* Scrolled: a slim bar (small JARVIS + the two icons) instead of disappearing. */
+.scrolled .top { max-height: 140px; opacity: 1; padding: 8px 16px 8px 18px; align-items: center; }
+.top, .brand h1, .brand h1 i, .tag, .status, .hud-btn, .hud-btn svg { transition: all 0.25s ease; }
+.tag, .status { max-height: 30px; overflow: hidden; }
+.scrolled .brand h1 { font-size: 18px; letter-spacing: 0.32em; gap: 10px; }
+.scrolled .brand h1 i { height: 18px; }
+.scrolled .tag, .scrolled .status { max-height: 0; margin-top: 0; opacity: 0; }
+.scrolled .hud-btn { width: 36px; height: 36px; border-radius: 11px; }
+.scrolled .hud-btn svg { width: 18px; height: 18px; }
