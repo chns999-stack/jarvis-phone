@@ -96,12 +96,14 @@ function receive(m, time) {
     if (mine && mine.status !== 'replied') mine.status = 'ack'
     saveChat()
     renderChat()
+    renderList()
   } else if (m.t === 'reply') {
     if (chat.some((c) => c.reply === m.to)) return
     const mine = chat.find((c) => c.id === m.to)
     if (mine) mine.status = 'replied'
     chat.push({ id: uid(), me: false, text: m.text, at: m.at ?? time, reply: m.to })
     saveChat()
+    renderList()
     if (tab !== 'chat') { unread++; toast(m.text.length > 70 ? m.text.slice(0, 68) + '…' : m.text) }
     renderChat()
   }
@@ -129,16 +131,19 @@ async function sendText(text) {
   const m = { id: uid(), me: true, text, at: Date.now(), status: 'sending' }
   chat.push(m)
   saveChat()
-  showTab('chat')
   renderChat()
+  renderList()
   try {
     await publish({ t: 'msg', id: m.id, text, at: m.at })
     m.status = 'sent'
+    toast(online() ? '✓ Sent to Jarvis' : '✓ Saved. Jarvis adds it when your PC turns on')
   } catch {
     m.status = 'failed'
+    toast('No signal. Saved here, will send when you are back online')
   }
   saveChat()
   renderChat()
+  renderList()
   ping()
 }
 // Anything never acknowledged, about to fall out of the relay's 12 h memory, goes again.
@@ -199,6 +204,18 @@ function dueOf(due) {
 const CHECK = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
 const BELL = '<svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/></svg>'
 
+const CLOCK = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>'
+function renderWaiting() {
+  const waiting = chat.filter((m) => m.me && ['sending', 'sent', 'ack', 'failed'].includes(m.status) && Date.now() - m.at < 72 * 3600_000)
+  if (!waiting.length) return ''
+  return `<div class="group waiting"><h3>WAITING FOR JARVIS <span>${waiting.length}</span></h3>${waiting
+    .map((m) => {
+      const note = m.status === 'ack' ? 'Jarvis is on it…' : m.status === 'failed' ? 'No signal · will retry' : m.status === 'sending' ? 'Saving…' : online() ? 'Sent · Jarvis is on it' : '✓ Saved · added when your PC turns on'
+      return `<div class="task wait">${CLOCK}<div class="body"><div class="title">${esc(m.text)}</div><div class="meta"><span>${note}</span></div></div></div>`
+    })
+    .join('')}</div>`
+}
+
 function renderList() {
   const tasks = list?.tasks ?? []
   const open = tasks.filter((t) => !(t.id in pendingDone ? pendingDone[t.id] : t.done))
@@ -207,16 +224,17 @@ function renderList() {
   $('#reminders').innerHTML = (list?.reminders ?? [])
     .map((r) => `<div class="reminder">${BELL}<span>${esc(r.text)}</span><span class="when">${esc(new Date(r.at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}</span></div>`)
     .join('')
+  const waitHtml = renderWaiting()
   if (!tasks.length) {
-    $('#tasks').innerHTML = list
+    $('#tasks').innerHTML = waitHtml + (list
       ? '<div class="empty"><b>ALL CLEAR</b>Nothing on the list. Type below to add something.</div>'
-      : '<div class="empty"><b>NO LIST YET</b>Your list shows up here once Jarvis is on. You can still send him things now.</div>'
+      : '<div class="empty"><b>NO LIST YET</b>Your list shows up here once Jarvis is on. You can still send him things now.</div>')
     return
   }
   const groups = {}
   for (const t of tasks) (groups[t.category] ??= []).push(t)
   let i = 0
-  $('#tasks').innerHTML = Object.entries(groups)
+  $('#tasks').innerHTML = waitHtml + Object.entries(groups)
     .map(([cat, ts]) => {
       const left = ts.filter((t) => !(t.id in pendingDone ? pendingDone[t.id] : t.done)).length
       return `<div class="group"><h3>${esc(cat)} <span>${left}</span></h3>${ts
@@ -247,7 +265,7 @@ function renderChat() {
     if (day !== lastDay) parts.push(`<div class="day">${esc(day)}</div>`)
     lastDay = day
     if (m.me) {
-      const tick = { sending: 'Sending…', sent: online() ? 'Sent' : 'Waiting for PC', ack: 'Jarvis got it', replied: '', failed: 'Not sent · will retry' }[m.status] ?? ''
+      const tick = { sending: 'Sending…', sent: online() ? 'Sent' : '✓ Saved · waiting for PC', ack: 'Jarvis got it', replied: '', failed: 'Not sent · will retry' }[m.status] ?? ''
       parts.push(`<div class="msg me">${esc(m.text)}${tick ? `<span class="tick ${m.status === 'ack' ? 'ack' : ''}">${tick}</span>` : ''}</div>`)
     } else parts.push(`<div class="msg jv">${esc(m.text)}</div>`)
   }

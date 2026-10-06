@@ -156,3 +156,10 @@ main {
 
 .toast { position: fixed; left: 50%; top: calc(14px + var(--safe-t)); transform: translate(-50%, -150%); z-index: 9; max-width: 90%; padding: 10px 16px; border-radius: 12px; background: rgba(6, 20, 30, 0.95); border: 1px solid var(--cyan); color: var(--ice); font-size: 13.5px; box-shadow: 0 0 20px rgba(25, 227, 255, 0.3); transition: transform 0.35s cubic-bezier(0.3, 1.3, 0.5, 1); }
 .toast.show { transform: translate(-50%, 0); }
+
+/* things sent from the phone that Jarvis hasn't handled yet */
+.group.waiting h3 { color: var(--amber); }
+.task.wait { border-style: dashed; border-color: rgba(240, 169, 60, 0.35); background: rgba(240, 169, 60, 0.05); --c: var(--amber); }
+.task.wait > svg { width: 22px; height: 22px; flex: none; fill: none; stroke: var(--amber); stroke-width: 1.8; stroke-linecap: round; animation: pulse 2s infinite; }
+.task.wait .title { font-size: 14.5px; }
+.task.wait .meta span { color: #c9a467; }
