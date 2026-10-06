@@ -102,6 +102,8 @@ function receive(m, time) {
     const mine = chat.find((c) => c.id === m.to)
     if (mine) mine.status = 'replied'
     chat.push({ id: uid(), me: false, text: m.text, at: m.at ?? time, reply: m.to })
+    // Asked out loud (and still here to hear it): answered out loud.
+    if (mine?.voice && Date.now() - mine.at < 5 * 60_000 && !document.hidden) speak(m.text)
     saveChat()
     renderList()
     if (tab !== 'chat') { unread++; toast(m.text.length > 70 ? m.text.slice(0, 68) + '…' : m.text) }
@@ -125,10 +127,10 @@ function ping() {
 }
 
 // ---------- sending ----------
-async function sendText(text) {
+async function sendText(text, { voice = false } = {}) {
   text = text.trim()
   if (!text) return
-  const m = { id: uid(), me: true, text, at: Date.now(), status: 'sending' }
+  const m = { id: uid(), me: true, text, at: Date.now(), status: 'sending', voice }
   chat.push(m)
   saveChat()
   renderChat()
@@ -447,3 +449,203 @@ document.addEventListener('visibilitychange', () => {
 })
 grow()
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {})
+
+// ---------- voice ----------
+/**
+ * Apple's speech recognition (webkitSpeechRecognition). Two ways in:
+ *  - the mic button: one sentence, sent when you stop talking;
+ *  - hands-free ("ears"): while the app is open and on screen, "Jarvis, ..."
+ *    sends whatever follows; "Jarvis" alone waits for the next sentence.
+ * iOS stops listening whenever the app leaves the screen; it resumes on return.
+ */
+const Recognizer = () => window.SpeechRecognition || window.webkitSpeechRecognition
+let rec = null
+let recMode = null // 'mic' | 'ears'
+let ears = store.get('jv-ears', false)
+let armedUntil = 0 // "Jarvis" heard alone: the next sentence is the request
+let talking = false
+
+function setupVoice() {
+  if (!Recognizer()) return
+  $('#mic').hidden = false
+  $('#ears').hidden = false
+  $('#mic').onclick = () => {
+    unlockSpeech()
+    if (recMode === 'mic') return stopRec()
+    listenOnce()
+  }
+  $('#ears').onclick = () => {
+    unlockSpeech()
+    ears = !ears
+    store.set('jv-ears', ears)
+    toast(ears ? 'Hands-free on: say "Jarvis, ..." while the app is open' : 'Hands-free off')
+    if (ears) startEars()
+    else if (recMode === 'ears') stopRec()
+    voiceUi()
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopRec()
+    else if (ears) startEars()
+  })
+  if (ears) startEars()
+  voiceUi()
+}
+
+function voiceUi() {
+  $('#mic').classList.toggle('on', recMode === 'mic')
+  $('#ears').classList.toggle('on', ears)
+  $('#ears').classList.toggle('live', recMode === 'ears')
+  $('.bar').classList.toggle('listening', recMode === 'mic' || Date.now() < armedUntil)
+  input.placeholder = recMode === 'mic' ? 'Listening…' : Date.now() < armedUntil ? 'Go ahead…' : ears && recMode === 'ears' ? 'Say "Jarvis, …"' : 'Tell Jarvis…'
+}
+
+function stopRec() {
+  const r = rec
+  rec = null
+  recMode = null
+  try { r?.abort() } catch { /* already stopped */ }
+  voiceUi()
+}
+
+function makeRec(continuous) {
+  const r = new (Recognizer())()
+  r.lang = 'en-US'
+  r.continuous = continuous
+  r.interimResults = true
+  return r
+}
+
+function listenOnce() {
+  stopRec()
+  if ('speechSynthesis' in window) speechSynthesis.cancel()
+  const r = makeRec(false)
+  rec = r
+  recMode = 'mic'
+  let finalText = ''
+  r.onresult = (e) => {
+    let interim = ''
+    for (const res of e.results) {
+      if (res.isFinal) finalText = res[0].transcript
+      else interim = res[0].transcript
+    }
+    input.value = finalText || interim
+    grow()
+  }
+  r.onerror = (e) => {
+    if (e.error === 'not-allowed') toast('Allow the microphone for Jarvis in Settings → Safari → Microphone')
+  }
+  r.onend = () => {
+    if (rec !== r) return
+    rec = null
+    recMode = null
+    const text = (finalText || input.value).trim()
+    input.value = ''
+    grow()
+    voiceUi()
+    if (text) sendText(text, { voice: true })
+    if (ears) setTimeout(startEars, 400)
+  }
+  r.start()
+  voiceUi()
+}
+
+/** "Jarvis, add bio lab due Friday" -> "add bio lab due Friday"; "Jarvis" alone -> ''; no name -> null */
+function afterName(t) {
+  const m = /\b(?:hey\s+)?jarvis\b[\s,.!?:]*(.*)$/i.exec(t)
+  return m ? m[1].trim() : null
+}
+
+function startEars() {
+  if (!ears || document.hidden || recMode === 'mic' || talking || rec) return
+  const r = makeRec(true)
+  rec = r
+  recMode = 'ears'
+  r.onresult = (e) => {
+    const res = e.results[e.results.length - 1]
+    const heard = res[0].transcript.trim()
+    if (!res.isFinal) {
+      if (Date.now() < armedUntil || afterName(heard) !== null) {
+        input.value = heard
+        grow()
+      }
+      return
+    }
+    const ask = Date.now() < armedUntil ? (afterName(heard) ?? heard) : afterName(heard)
+    input.value = ''
+    grow()
+    if (ask === null) return
+    if (!ask) {
+      armedUntil = Date.now() + 8000 // "Jarvis..." then a pause
+      setTimeout(voiceUi, 8100)
+      voiceUi()
+      return
+    }
+    armedUntil = 0
+    sendText(ask, { voice: true })
+    voiceUi()
+  }
+  r.onend = () => {
+    if (rec !== r) return
+    rec = null
+    recMode = null
+    voiceUi()
+    // iOS ends continuous listening every so often; pick it straight back up.
+    if (ears && !document.hidden) setTimeout(startEars, 300)
+  }
+  r.onerror = (e) => {
+    if (e.error === 'not-allowed') {
+      ears = false
+      store.set('jv-ears', false)
+      toast('Allow the microphone for Jarvis in Settings → Safari → Microphone')
+    }
+  }
+  try {
+    r.start()
+  } catch {
+    rec = null
+    recMode = null
+  }
+  voiceUi()
+}
+
+// ---------- speaking ----------
+let voicePick = null
+function jarvisVoice() {
+  if (voicePick) return voicePick
+  const vs = speechSynthesis.getVoices()
+  voicePick = ['Daniel', 'Arthur', 'Oliver', 'Google UK English Male'].map((n) => vs.find((v) => v.name.startsWith(n))).find(Boolean) ?? vs.find((v) => v.lang === 'en-GB') ?? null
+  return voicePick
+}
+// iOS only lets a page speak after a tap has spoken once.
+let unlocked = false
+function unlockSpeech() {
+  if (unlocked || !('speechSynthesis' in window)) return
+  unlocked = true
+  const u = new SpeechSynthesisUtterance(' ')
+  u.volume = 0
+  speechSynthesis.speak(u)
+}
+function speak(text) {
+  if (!('speechSynthesis' in window)) return
+  // Not while listening: he'd hear himself.
+  const resume = ears
+  if (recMode === 'ears') stopRec()
+  talking = true
+  const u = new SpeechSynthesisUtterance(text.replace(/[*_#`]/g, ''))
+  const v = jarvisVoice()
+  if (v) u.voice = v
+  u.rate = 1.05
+  let done = false
+  u.onend = u.onerror = () => {
+    if (done) return
+    done = true
+    talking = false
+    if (resume) setTimeout(startEars, 300)
+  }
+  // Some phones never say they finished: listen again after the reply's length anyway.
+  setTimeout(() => u.onend(), 2500 + text.length * 90)
+  speechSynthesis.cancel()
+  speechSynthesis.speak(u)
+}
+
+setupVoice()

@@ -177,3 +177,14 @@ main {
 .group.finished .task::before { opacity: 0.35; }
 .empty.small { padding: 18px 16px 26px; }
 .drawn .task:not(.leaving), .drawn .reminder { animation: none; }
+
+/* voice */
+.mic { width: 40px; height: 40px; flex: none; border-radius: 50%; border: 1px solid rgba(25, 227, 255, 0.4); background: rgba(25, 227, 255, 0.08); display: grid; place-items: center; transition: 0.2s; }
+.mic svg, .ears svg { width: 19px; height: 19px; fill: none; stroke: var(--cyan-soft); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.mic.on { background: var(--red); border-color: var(--red); box-shadow: 0 0 18px rgba(255, 77, 94, 0.7); animation: pulse 1.2s infinite; }
+.mic.on svg { stroke: #fff; }
+.ears { margin-right: 8px; }
+.ears.on { border-color: var(--cyan); background: rgba(25, 227, 255, 0.16); }
+.ears.on svg { stroke: var(--ice); }
+.ears.live { box-shadow: 0 0 14px rgba(25, 227, 255, 0.45); }
+.bar.listening { border-color: var(--red); box-shadow: 0 0 26px rgba(255, 77, 94, 0.3); }
