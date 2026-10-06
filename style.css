@@ -261,3 +261,8 @@ main {
 .next-done:active { transform: scale(0.94); }
 .next.finishing { animation: finish 0.45s both; }
 @keyframes finish { 40% { box-shadow: 0 0 40px color-mix(in srgb, var(--c) 60%, transparent); } to { opacity: 0; transform: scale(0.96) translateY(-6px); } }
+
+/* Snug to the bottom: the home-bar inset is mostly empty space, and none is needed above the keyboard. */
+main { height: var(--vvh, 100%); }
+.compose { padding-bottom: max(6px, calc(env(safe-area-inset-bottom, 0px) - 18px)); }
+.kb .compose { padding-bottom: 6px; }

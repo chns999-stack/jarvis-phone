@@ -6,7 +6,7 @@
  */
 const RELAY = 'https://ntfy.sh'
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 7
+const VERSION = 8
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -950,3 +950,18 @@ $('#next').addEventListener('click', (e) => {
     toast(after.length ? `Nice. ${after.length} to go` : 'Nice. That was the last one')
   }, 450)
 })
+
+// Keyboard: size the app to what's actually visible so the type bar sits right on the keyboard.
+const vv = window.visualViewport
+function fitViewport() {
+  const h = vv ? vv.height : window.innerHeight
+  document.documentElement.style.setProperty('--vvh', `${Math.round(h)}px`)
+  document.body.classList.toggle('kb', Boolean(vv) && window.innerHeight - vv.height > 120)
+  if (vv && vv.offsetTop) window.scrollTo(0, 0)
+}
+vv?.addEventListener('resize', fitViewport)
+vv?.addEventListener('scroll', fitViewport)
+window.addEventListener('resize', fitViewport)
+document.addEventListener('focusin', () => setTimeout(fitViewport, 50))
+document.addEventListener('focusout', () => setTimeout(fitViewport, 50))
+fitViewport()
