@@ -387,3 +387,13 @@ main { position: relative; z-index: 1; height: var(--vvh, 100%); display: flex; 
 .scrolled .tag, .scrolled .status { max-height: 0; margin-top: 0; opacity: 0; }
 .scrolled .hud-btn { width: 36px; height: 36px; border-radius: 11px; }
 .scrolled .hud-btn svg { width: 18px; height: 18px; }
+
+/* Reminders are orange, tasks are blue: tell them apart at a glance. */
+.row.rem .ico svg { stroke: var(--amber); }
+.row.rem .time, .row.rem .sub { color: #e9a24a; }
+.row.rem .chev { stroke: var(--amber); }
+.row.rem:active { background: rgba(240, 169, 60, 0.08); }
+.add-btn.rem { color: #f3b765; border-color: rgba(240, 169, 60, 0.45); background: rgba(240, 169, 60, 0.08); }
+.tab[data-tab="reminders"].on { color: #f3b765; }
+.tab[data-tab="reminders"].on::after { background: rgba(240, 169, 60, 0.1); border-color: rgba(240, 169, 60, 0.4); }
+.tab[data-tab="reminders"].on span::after { background: var(--amber); }

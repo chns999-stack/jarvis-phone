@@ -27,7 +27,7 @@ async function relayFetch(topic, opts) {
   return fetch(`${BACKUP}/${topic}`, opts)
 }
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 17
+const VERSION = 18
 // The design file must be the one this code was written for: the home-screen app
 // can hold an older saved copy. A version stamp on its address forces the right one.
 ;(() => {
@@ -312,7 +312,7 @@ function taskRow(t, { time = '', timeCls = '', sub = null, lead = false } = {}) 
 function remRow(r, { time = '', sub = null } = {}) {
   const at = new Date(r.at)
   const detail = sub ?? `${esc(dayOf(at))}<span class="dot">•</span>${esc(timeOf(at))}`
-  return `<div class="row${r.local ? ' local' : ''}" ${r.local ? '' : `data-rem="${esc(r.id)}"`}>
+  return `<div class="row rem${r.local ? ' local' : ''}" ${r.local ? '' : `data-rem="${esc(r.id)}"`}>
     <div class="ico">${ICON.cal}</div>
     <div class="body"><div class="title">${esc(r.text)}</div><div class="sub">${detail}</div></div>
     ${time ? `<div class="time">${esc(time)}</div>` : ''}${r.local ? '' : ICON.chev}
