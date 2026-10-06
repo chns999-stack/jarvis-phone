@@ -1,5 +1,5 @@
 // Keeps the app opening with no signal; the relay itself is always live.
-const CACHE = 'jarvis-phone-v2'
+const CACHE = 'jarvis-phone-v3'
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'manifest.webmanifest']
 
 self.addEventListener('install', (e) => {

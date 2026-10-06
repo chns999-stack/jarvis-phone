@@ -162,9 +162,14 @@ async function resendOld() {
   saveChat()
 }
 async function toggleTask(t) {
-  const want = !(t.id in pendingDone ? pendingDone[t.id] : t.done)
+  const want = !isDone(t)
   pendingDone[t.id] = want
   store.set('jv-pending', pendingDone)
+  if (want) {
+    t.doneAt = Date.now()
+    leaving[t.id] = Date.now()
+    setTimeout(renderList, LEAVE_MS + 20)
+  } else delete leaving[t.id]
   renderList()
   try {
     await publish({ t: want ? 'done' : 'undo', id: uid(), task: t.id })
@@ -216,9 +221,13 @@ function renderWaiting() {
     .join('')}</div>`
 }
 
+const isDone = (t) => (t.id in pendingDone ? pendingDone[t.id] : Boolean(t.done))
+const LEAVE_MS = 900
+const leaving = {}
+
 function renderList() {
   const tasks = list?.tasks ?? []
-  const open = tasks.filter((t) => !(t.id in pendingDone ? pendingDone[t.id] : t.done))
+  const open = tasks.filter((t) => !isDone(t))
   $('#count').textContent = open.length || ''
   $('#synced').textContent = list ? `Synced ${ago(list.at)}` : ''
   $('#reminders').innerHTML = (list?.reminders ?? [])
@@ -231,24 +240,46 @@ function renderList() {
       : '<div class="empty"><b>NO LIST YET</b>Your list shows up here once Jarvis is on. You can still send him things now.</div>')
     return
   }
+  // Ticked things leave the list (after the tick animation) for FINISHED at the bottom.
+  const now = Date.now()
+  const showOpen = (t) => !isDone(t) || now - (leaving[t.id] ?? 0) < LEAVE_MS
+  const openTasks = tasks.filter(showOpen)
+  const finished = tasks.filter((t) => !showOpen(t)).sort((a, b) => (b.doneAt ?? now) - (a.doneAt ?? now))
   const groups = {}
-  for (const t of tasks) (groups[t.category] ??= []).push(t)
+  for (const t of openTasks) (groups[t.category] ??= []).push(t)
   let i = 0
-  $('#tasks').innerHTML = waitHtml + Object.entries(groups)
-    .map(([cat, ts]) => {
-      const left = ts.filter((t) => !(t.id in pendingDone ? pendingDone[t.id] : t.done)).length
-      return `<div class="group"><h3>${esc(cat)} <span>${left}</span></h3>${ts
-        .map((t) => {
-          const done = t.id in pendingDone ? pendingDone[t.id] : t.done
-          const due = dueOf(t.due)
-          return `<div class="task${done ? ' done' : ''}${t.id in pendingDone ? ' pending' : ''}" style="--c:${CAT[cat] ?? '#19e3ff'};animation-delay:${i++ * 30}ms">
-            <button class="check" data-id="${esc(t.id)}" aria-label="Done">${CHECK}</button>
-            <div class="body"><div class="title">${esc(t.title)}</div>${due || t.effort ? `<div class="meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}${t.effort && !done ? `<span>${esc(t.effort)}</span>` : ''}</div>` : ''}</div>
-          </div>`
-        })
-        .join('')}</div>`
-    })
-    .join('')
+  const row = (t, cat) => {
+    const done = isDone(t)
+    const due = dueOf(t.due)
+    const gone = done && now - (leaving[t.id] ?? 0) < LEAVE_MS ? ' leaving' : ''
+    const meta = done && !gone
+      ? `<span>${esc(cat)}${t.doneAt ? ` · done ${esc(doneLabel(t.doneAt))}` : ''}</span>`
+      : `${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}${t.effort && !done ? `<span>${esc(t.effort)}</span>` : ''}`
+    return `<div class="task${done ? ' done' : ''}${gone}${t.id in pendingDone ? ' pending' : ''}" style="--c:${CAT[cat] ?? '#19e3ff'};animation-delay:${gone ? 0 : i++ * 30}ms">
+      <button class="check" data-id="${esc(t.id)}" aria-label="${done ? 'Not done' : 'Done'}">${CHECK}</button>
+      <div class="body"><div class="title">${esc(t.title)}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>
+    </div>`
+  }
+  const openHtml = openTasks.length
+    ? Object.entries(groups)
+        .map(([cat, ts]) => `<div class="group"><h3>${esc(cat)} <span>${ts.filter((t) => !isDone(t)).length}</span></h3>${ts.map((t) => row(t, cat)).join('')}</div>`)
+        .join('')
+    : '<div class="empty small"><b>ALL CLEAR</b>Everything is done. Look at you.</div>'
+  const finOpen = store.get('jv-fin-open', false)
+  const finHtml = finished.length
+    ? `<div class="group finished${finOpen ? ' open' : ''}"><h3 class="fin-toggle">FINISHED <span>${finished.length}</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></h3><div class="fin-body">${finished.map((t) => row(t, t.category)).join('')}</div></div>`
+    : ''
+  $('#tasks').innerHTML = waitHtml + openHtml + finHtml
+  // Rows fade in on the first draw only; redraws (a tick, a sync) don't flicker.
+  requestAnimationFrame(() => setTimeout(() => document.body.classList.add('drawn'), 700))
+}
+
+function doneLabel(t) {
+  const d = new Date(t)
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  if (d >= today) return 'today'
+  if (d >= today - 86400000) return 'yesterday'
+  return d.toLocaleDateString([], { weekday: 'long' })
 }
 
 function renderChat() {
@@ -370,6 +401,10 @@ if (!pair) {
 
 document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)))
 $('#tasks').addEventListener('click', (e) => {
+  if (e.target.closest('.fin-toggle')) {
+    store.set('jv-fin-open', !store.get('jv-fin-open', false))
+    return renderList()
+  }
   const b = e.target.closest('.check')
   if (!b) return
   const t = list?.tasks.find((x) => x.id === b.dataset.id)

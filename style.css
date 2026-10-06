@@ -163,3 +163,17 @@ main {
 .task.wait > svg { width: 22px; height: 22px; flex: none; fill: none; stroke: var(--amber); stroke-width: 1.8; stroke-linecap: round; animation: pulse 2s infinite; }
 .task.wait .title { font-size: 14.5px; }
 .task.wait .meta span { color: #c9a467; }
+
+/* a ticked task: tick, then fold away to FINISHED */
+.task.leaving { animation: leave 0.45s 0.45s both; }
+@keyframes leave { to { opacity: 0; transform: translateX(40px); max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: 0; } }
+.task { max-height: 200px; }
+.group.finished h3 { cursor: pointer; color: var(--mute); padding: 6px 0; }
+.group.finished h3 svg { width: 16px; height: 16px; fill: none; stroke: var(--mute); stroke-width: 2; transition: transform 0.3s; order: 3; }
+.group.finished.open h3 svg { transform: rotate(180deg); }
+.group.finished .fin-body { display: none; }
+.group.finished.open .fin-body { display: block; }
+.group.finished .task { background: rgba(10, 30, 42, 0.3); }
+.group.finished .task::before { opacity: 0.35; }
+.empty.small { padding: 18px 16px 26px; }
+.drawn .task:not(.leaving), .drawn .reminder { animation: none; }
