@@ -5,8 +5,20 @@
  * while the PC is off wait at ntfy (12 h) until Jarvis starts.
  */
 const RELAY = 'https://ntfy.sh'
+// ntfy.sh allows 250 messages a day per connection; past that, the backup carries them.
+const BACKUP = 'https://ntfy.envs.net'
+const nextMidnightUtc = () => { const d = new Date(); d.setUTCHours(24, 0, 30, 0); return d.getTime() }
+/** Send to ntfy.sh, or the backup once ntfy.sh says the daily limit is reached. */
+async function relayFetch(topic, opts) {
+  if (Date.now() >= store.get('jv-primary-blocked', 0)) {
+    const r = await fetch(`${RELAY}/${topic}`, opts)
+    if (r.status !== 429) return r
+    store.set('jv-primary-blocked', nextMidnightUtc())
+  }
+  return fetch(`${BACKUP}/${topic}`, opts)
+}
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 11
+const VERSION = 12
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -76,26 +88,29 @@ async function flushOutbox() {
   store.set('jv-outbox', outbox)
 }
 async function publish(obj) {
-  const r = await fetch(`${RELAY}/${pair.i}`, { method: 'POST', body: await seal(obj) })
+  const r = await relayFetch(pair.i, { method: 'POST', body: await seal(obj) })
   if (!r.ok) throw new Error(`relay ${r.status}`)
 }
 
 // ---------- relay in ----------
-let es = null
+let streams = []
+// Both relays: Jarvis answers through whichever one isn't over its daily limit.
 function subscribe() {
-  es?.close()
-  es = new EventSource(`${RELAY}/${pair.o}/sse?since=${lastId ?? '12h'}`)
-  es.onmessage = async (e) => {
-    let ev
-    try { ev = JSON.parse(e.data) } catch { return }
-    if (ev.event !== 'message') return
-    lastId = ev.id
-    store.set('jv-last', lastId)
-    let m
-    try { m = await open(ev.message) } catch { return }
-    receive(m, ev.time * 1000)
-  }
-  es.onerror = () => setStatus()
+  streams.forEach((x) => x.close())
+  streams = [[RELAY, 'jv-last'], [BACKUP, 'jv-last-backup']].map(([base, k]) => {
+    const es = new EventSource(`${base}/${pair.o}/sse?since=${store.get(k, null) ?? '12h'}`)
+    es.onmessage = async (e) => {
+      let ev
+      try { ev = JSON.parse(e.data) } catch { return }
+      if (ev.event !== 'message') return
+      store.set(k, ev.id)
+      let m
+      try { m = await open(ev.message) } catch { return }
+      receive(m, ev.time * 1000)
+    }
+    es.onerror = () => setStatus()
+    return es
+  })
 }
 
 function receive(m, time) {
@@ -841,7 +856,7 @@ async function uploadPhoto(m) {
   const dataUrl = store.get(`jv-photo-${m.id}`, null)
   if (!dataUrl) throw new Error('photo no longer on this phone')
   const bytes = b64u.dec(dataUrl.split(',')[1].replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''))
-  const r = await fetch(`${RELAY}/${pair.i}`, {
+  const r = await relayFetch(pair.i, {
     method: 'PUT',
     body: new Blob([await sealBytes(bytes)]),
     headers: { Filename: 'p.bin', 'X-Message': await seal({ t: 'photo', id: m.id, text: m.text, at: m.at }) },
