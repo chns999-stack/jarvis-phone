@@ -188,3 +188,16 @@ main {
 .ears.on svg { stroke: var(--ice); }
 .ears.live { box-shadow: 0 0 14px rgba(25, 227, 255, 0.45); }
 .bar.listening { border-color: var(--red); box-shadow: 0 0 26px rgba(255, 77, 94, 0.3); }
+
+/* FINISHED as a folder: a card that opens to show what's done */
+.group.finished { margin-top: 22px; border: 1px solid var(--line); border-radius: 16px; background: rgba(10, 30, 42, 0.35); padding: 4px 12px; }
+.group.finished h3 { display: flex; align-items: center; gap: 10px; margin: 0; padding: 12px 2px; font-size: 13px; color: var(--cyan-soft); }
+.group.finished h3::after { display: none; }
+.group.finished h3 b { font-weight: 500; flex: 1; }
+.group.finished h3 span { background: rgba(25, 227, 255, 0.15); color: var(--cyan); padding: 2px 9px; border-radius: 999px; font-size: 12px; }
+.group.finished h3 svg.folder { width: 22px; height: 22px; fill: rgba(25, 227, 255, 0.12); stroke: var(--cyan); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.group.finished h3 svg.chev { width: 18px; height: 18px; fill: none; stroke: var(--cyan-soft); stroke-width: 2; transition: transform 0.3s; }
+.group.finished.open h3 svg.chev { transform: rotate(180deg); }
+.group.finished.open .fin-body { padding-bottom: 6px; }
+.group.finished h3 svg.folder { order: 0; }
+.group.finished h3 svg.chev { order: 3; }

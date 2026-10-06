@@ -5,6 +5,8 @@
  * while the PC is off wait at ntfy (12 h) until Jarvis starts.
  */
 const RELAY = 'https://ntfy.sh'
+// Bumped with every release; version.json on the site says what's current.
+const VERSION = 5
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -123,7 +125,7 @@ let pingAt = 0
 function ping() {
   if (Date.now() - pingAt < 20_000) return
   pingAt = Date.now()
-  publish({ t: 'ping', at: Date.now() }).catch(() => {})
+  publish({ t: 'ping', at: Date.now(), v: VERSION, voice: Boolean(window.SpeechRecognition || window.webkitSpeechRecognition), standalone: Boolean(navigator.standalone) }).catch(() => {})
 }
 
 // ---------- sending ----------
@@ -211,6 +213,7 @@ function dueOf(due) {
 const CHECK = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
 const BELL = '<svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/></svg>'
 
+const FOLDER = '<svg class="folder" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/><path d="M8.5 13.5l2 2 4-4"/></svg>'
 const CLOCK = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>'
 function renderWaiting() {
   const waiting = chat.filter((m) => m.me && ['sending', 'sent', 'ack', 'failed'].includes(m.status) && Date.now() - m.at < 72 * 3600_000)
@@ -269,7 +272,7 @@ function renderList() {
     : '<div class="empty small"><b>ALL CLEAR</b>Everything is done. Look at you.</div>'
   const finOpen = store.get('jv-fin-open', false)
   const finHtml = finished.length
-    ? `<div class="group finished${finOpen ? ' open' : ''}"><h3 class="fin-toggle">FINISHED <span>${finished.length}</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></h3><div class="fin-body">${finished.map((t) => row(t, t.category)).join('')}</div></div>`
+    ? `<div class="group finished${finOpen ? ' open' : ''}"><h3 class="fin-toggle">${FOLDER}<b>FINISHED</b><span>${finished.length}</span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></h3><div class="fin-body">${finished.map((t) => row(t, t.category)).join('')}</div></div>`
     : ''
   $('#tasks').innerHTML = waitHtml + openHtml + finHtml
   // Rows fade in on the first draw only; redraws (a tick, a sync) don't flicker.
@@ -466,8 +469,14 @@ let armedUntil = 0 // "Jarvis" heard alone: the next sentence is the request
 let talking = false
 
 function setupVoice() {
-  if (!Recognizer()) return
   $('#mic').hidden = false
+  if (!Recognizer()) {
+    $('#mic').onclick = () => {
+      input.focus()
+      toast('Voice is blocked in home-screen apps on this iPhone. Tap the 🎤 on your keyboard to dictate instead.')
+    }
+    return
+  }
   $('#ears').hidden = false
   $('#mic').onclick = () => {
     unlockSpeech()
@@ -649,3 +658,21 @@ function speak(text) {
 }
 
 setupVoice()
+
+// ---------- updates ----------
+/** A newer version on the site: reload into it (checked on every open). */
+async function checkUpdate() {
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' })
+    const { v } = await r.json()
+    // One reload per open, so a stale cache can never loop it.
+    if (v > VERSION && sessionStorage.getItem('jv-reloaded') !== String(v)) {
+      sessionStorage.setItem('jv-reloaded', String(v))
+      const regs = (await navigator.serviceWorker?.getRegistrations?.()) ?? []
+      await Promise.all(regs.map((g) => g.update().catch(() => {})))
+      location.reload()
+    }
+  } catch { /* offline: next time */ }
+}
+checkUpdate()
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate() })
