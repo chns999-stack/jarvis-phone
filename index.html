@@ -56,6 +56,8 @@
     <div class="views">
       <section id="view-list" class="view on">
         <div id="synced" class="synced"></div>
+        <div id="next"></div>
+        <div id="notify-card"></div>
         <div id="reminders"></div>
         <div id="tasks"></div>
       </section>
@@ -67,11 +69,16 @@
     <footer class="compose">
       <div class="chips" id="chips">
         <button data-say="What's due this week?">What's due?</button>
-        <button data-fill="Add homework: ">+ Homework</button>
+        <button data-open="add-sheet" class="chip-strong">+ Task</button>
+        <button data-photo>📷 Photo of homework</button>
         <button data-fill="Remind me ">Remind me</button>
         <button data-fill="I finished ">Finished…</button>
       </div>
       <form id="form" class="bar">
+        <button id="cam" type="button" class="cam" aria-label="Send a photo" data-photo>
+          <svg viewBox="0 0 24 24"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.5-2h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z" /><circle cx="12" cy="13" r="3.5" /></svg>
+        </button>
+        <input id="photo-input" type="file" accept="image/*" hidden />
         <textarea id="input" rows="1" placeholder="Tell Jarvis…" enterkeyhint="send"></textarea>
         <button id="mic" type="button" class="mic" aria-label="Talk to Jarvis" hidden>
           <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" /></svg>
@@ -82,6 +89,57 @@
       </form>
     </footer>
   </main>
+
+  <div id="scrim" class="scrim" hidden></div>
+
+  <!-- Quick add: straight onto the list, no Jarvis reply needed. -->
+  <section id="add-sheet" class="sheet" hidden>
+    <div class="grab"></div>
+    <h2>New task</h2>
+    <form id="add-form">
+      <input id="add-title" placeholder="What is it? e.g. Chem lab report" autocomplete="off" enterkeyhint="done" />
+      <label>Category</label>
+      <div class="seg">
+        <button type="button" data-cat="SCHOOL">School</button>
+        <button type="button" data-cat="FILM">Film</button>
+        <button type="button" data-cat="DESIGN">Design</button>
+        <button type="button" data-cat="SCOUTS">Scouts</button>
+        <button type="button" data-cat="PERSONAL">Personal</button>
+      </div>
+      <label>Due</label>
+      <div class="seg">
+        <button type="button" data-day="">None</button>
+        <button type="button" data-day="0">Today</button>
+        <button type="button" data-day="1">Tomorrow</button>
+        <button type="button" data-day="pick">Pick date</button>
+        <input id="add-date" type="date" class="date-hidden" />
+      </div>
+      <label>How big?</label>
+      <div class="seg">
+        <button type="button" data-effort="small">Quick</button>
+        <button type="button" data-effort="medium">Medium</button>
+        <button type="button" data-effort="large">Big</button>
+      </div>
+      <button class="btn wide" type="submit">Add to list</button>
+    </form>
+  </section>
+
+  <!-- Lock-screen notifications through the free ntfy app. -->
+  <section id="notify-sheet" class="sheet" hidden>
+    <div class="grab"></div>
+    <h2>Lock-screen notifications</h2>
+    <p class="sub">Reminders and a 7 AM school-day brief, even when your PC is off.</p>
+    <ol class="steps">
+      <li><b>Install ntfy</b> (free) from the App Store. <a class="btn small" href="https://apps.apple.com/app/ntfy/id1625396347" target="_blank" rel="noopener">Open App Store</a></li>
+      <li><b>Copy your Jarvis channel name:</b>
+        <div class="topic"><input id="topic-text" readonly /><button id="copy-topic" class="btn small" type="button">Copy</button></div>
+      </li>
+      <li>In ntfy tap <b>+</b>, paste it as the topic, leave the server as <b>ntfy.sh</b>, tap <b>Subscribe</b>, and allow notifications.</li>
+      <li><button id="test-notify" class="btn small" type="button">Send a test</button> It should pop up in a few seconds.</li>
+    </ol>
+    <p class="fine">Notification text goes through ntfy unencrypted (it has to be readable on your lock screen). The channel name is long and random, so keep it to yourself.</p>
+    <button id="notify-done" class="btn wide" type="button">Done</button>
+  </section>
 
   <div id="toast" class="toast"></div>
   <script type="module" src="app.js"></script>

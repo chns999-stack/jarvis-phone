@@ -6,7 +6,7 @@
  */
 const RELAY = 'https://ntfy.sh'
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 5
+const VERSION = 6
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -85,6 +85,10 @@ function receive(m, time) {
     store.set('jv-seen', lastSeen)
   }
   if (m.t === 'state') {
+    if (m.notify && m.notify !== store.get('jv-notify-topic', null)) {
+      store.set('jv-notify-topic', m.notify)
+      renderNotifyCard()
+    }
     if (!list || m.at >= list.at) {
       list = m
       store.set('jv-list', list)
@@ -103,6 +107,7 @@ function receive(m, time) {
     if (chat.some((c) => c.reply === m.to)) return
     const mine = chat.find((c) => c.id === m.to)
     if (mine) mine.status = 'replied'
+    if (mine?.kind === 'photo') forgetPhoto(mine.id)
     chat.push({ id: uid(), me: false, text: m.text, at: m.at ?? time, reply: m.to })
     // Asked out loud (and still here to hear it): answered out loud.
     if (mine?.voice && Date.now() - mine.at < 5 * 60_000 && !document.hidden) speak(m.text)
@@ -153,7 +158,7 @@ async function sendText(text, { voice = false } = {}) {
 // Anything never acknowledged, about to fall out of the relay's 12 h memory, goes again.
 async function resendOld() {
   for (const m of chat) {
-    if (!m.me) continue
+    if (!m.me || m.kind === 'photo') continue
     const age = Date.now() - m.at
     if (m.status === 'failed' || (m.status === 'sent' && age > 11 * 3600_000 && age < 72 * 3600_000 && Date.now() - (m.resent ?? 0) > 11 * 3600_000)) {
       try {
@@ -221,7 +226,8 @@ function renderWaiting() {
   return `<div class="group waiting"><h3>WAITING FOR JARVIS <span>${waiting.length}</span></h3>${waiting
     .map((m) => {
       const note = m.status === 'ack' ? 'Jarvis is on it…' : m.status === 'failed' ? 'No signal · will retry' : m.status === 'sending' ? 'Saving…' : online() ? 'Sent · Jarvis is on it' : '✓ Saved · added when your PC turns on'
-      return `<div class="task wait">${CLOCK}<div class="body"><div class="title">${esc(m.text)}</div><div class="meta"><span>${note}</span></div></div></div>`
+      const what = m.kind === 'photo' ? `📷 Photo${m.text ? `: ${esc(m.text)}` : ''}` : esc(m.text)
+      return `<div class="task wait">${CLOCK}<div class="body"><div class="title">${what}</div><div class="meta"><span>${note}</span></div></div></div>`
     })
     .join('')}</div>`
 }
@@ -231,7 +237,7 @@ const LEAVE_MS = 900
 const leaving = {}
 
 function renderList() {
-  const tasks = list?.tasks ?? []
+  const tasks = [...(list?.tasks ?? []), ...pendingAdds().map((a) => ({ ...a, local: true }))]
   const open = tasks.filter((t) => !isDone(t))
   $('#count').textContent = open.length || ''
   $('#synced').textContent = list ? `Synced ${ago(list.at)}` : ''
@@ -240,6 +246,7 @@ function renderList() {
     .join('')
   const waitHtml = renderWaiting()
   if (!tasks.length) {
+    renderNext()
     $('#tasks').innerHTML = waitHtml + (list
       ? '<div class="empty"><b>ALL CLEAR</b>Nothing on the list. Type below to add something.</div>'
       : '<div class="empty"><b>NO LIST YET</b>Your list shows up here once Jarvis is on. You can still send him things now.</div>')
@@ -260,6 +267,12 @@ function renderList() {
     const meta = done && !gone
       ? `<span>${esc(cat)}${t.doneAt ? ` · done ${esc(doneLabel(t.doneAt))}` : ''}</span>`
       : `${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}${t.effort && !done ? `<span>${esc(t.effort)}</span>` : ''}`
+    if (t.local) {
+      return `<div class="task local" style="--c:${CAT[cat] ?? '#19e3ff'}">
+        <span class="check ghost">${CLOCK}</span>
+        <div class="body"><div class="title">${esc(t.title)}</div><div class="meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}<span>${t.failed ? 'not sent yet' : online() ? 'adding…' : 'added when your PC is on'}</span></div></div>
+      </div>`
+    }
     return `<div class="task${done ? ' done' : ''}${gone}${t.id in pendingDone ? ' pending' : ''}" style="--c:${CAT[cat] ?? '#19e3ff'};animation-delay:${gone ? 0 : i++ * 30}ms">
       <button class="check" data-id="${esc(t.id)}" aria-label="${done ? 'Not done' : 'Done'}">${CHECK}</button>
       <div class="body"><div class="title">${esc(t.title)}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>
@@ -275,6 +288,7 @@ function renderList() {
     ? `<div class="group finished${finOpen ? ' open' : ''}"><h3 class="fin-toggle">${FOLDER}<b>FINISHED</b><span>${finished.length}</span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></h3><div class="fin-body">${finished.map((t) => row(t, t.category)).join('')}</div></div>`
     : ''
   $('#tasks').innerHTML = waitHtml + openHtml + finHtml
+  renderNext()
   // Rows fade in on the first draw only; redraws (a tick, a sync) don't flicker.
   requestAnimationFrame(() => setTimeout(() => document.body.classList.add('drawn'), 700))
 }
@@ -302,7 +316,7 @@ function renderChat() {
     lastDay = day
     if (m.me) {
       const tick = { sending: 'Sending…', sent: online() ? 'Sent' : '✓ Saved · waiting for PC', ack: 'Jarvis got it', replied: '', failed: 'Not sent · will retry' }[m.status] ?? ''
-      parts.push(`<div class="msg me">${esc(m.text)}${tick ? `<span class="tick ${m.status === 'ack' ? 'ack' : ''}">${tick}</span>` : ''}</div>`)
+      parts.push(`<div class="msg me">${m.kind === 'photo' && m.thumb ? `<img class="ph" src="${m.thumb}" alt="photo">` : ''}${esc(m.text)}${tick ? `<span class="tick ${m.status === 'ack' ? 'ack' : ''}">${tick}</span>` : ''}</div>`)
     } else parts.push(`<div class="msg jv">${esc(m.text)}</div>`)
   }
   if (chat.some((m) => m.me && m.status === 'ack')) parts.push('<div class="typing"><i></i><i></i><i></i></div>')
@@ -390,6 +404,9 @@ function start() {
   subscribe()
   ping()
   resendOld()
+  resendPhotos()
+  resendAdds()
+  renderNotifyCard()
   setInterval(() => { setStatus(); renderList() }, 30_000)
 }
 
@@ -402,7 +419,7 @@ if (!pair) {
     store.set('jv-pair', p)
     start()
   }
-} else start()
+} else queueMicrotask(start) // after the whole file has run (later sections declare state start() uses)
 
 document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)))
 $('#tasks').addEventListener('click', (e) => {
@@ -416,7 +433,12 @@ $('#tasks').addEventListener('click', (e) => {
   if (t) toggleTask(t)
 })
 const input = $('#input')
-const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; $('#send').disabled = !input.value.trim() }
+const grow = () => {
+  input.style.height = 'auto'
+  // Measured 0 while the app is still hidden (before pairing shows it): leave it natural.
+  if (input.scrollHeight) input.style.height = Math.min(input.scrollHeight, 120) + 'px'
+  $('#send').disabled = !input.value.trim()
+}
 input.addEventListener('input', grow)
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#form').requestSubmit() }
@@ -430,7 +452,7 @@ $('#form').onsubmit = (e) => {
 }
 $('#chips').addEventListener('click', (e) => {
   const b = e.target.closest('button')
-  if (!b) return
+  if (!b || b.dataset.open || b.dataset.photo !== undefined) return
   if (b.dataset.say) return sendText(b.dataset.say)
   input.value = b.dataset.fill
   grow()
@@ -449,6 +471,8 @@ document.addEventListener('visibilitychange', () => {
   subscribe() // iOS drops the stream in the background
   ping()
   resendOld()
+  resendPhotos()
+  resendAdds()
 })
 grow()
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {})
@@ -676,3 +700,239 @@ async function checkUpdate() {
 }
 checkUpdate()
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate() })
+
+// ---------- next up ----------
+function renderNext() {
+  const el = $('#next')
+  const open = (list?.tasks ?? []).filter((t) => !isDone(t))
+  const dated = open.filter((t) => t.due).sort((a, b) => new Date(a.due.length === 10 ? a.due + 'T23:59' : a.due) - new Date(b.due.length === 10 ? b.due + 'T23:59' : b.due))
+  const t = dated[0] ?? open[0]
+  if (!t) return (el.innerHTML = '')
+  const due = dueOf(t.due)
+  el.innerHTML = `<div class="next" style="--c:${CAT[t.category] ?? '#19e3ff'}">
+    <div class="next-label">NEXT UP</div>
+    <div class="next-title">${esc(t.title)}</div>
+    <div class="next-meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : '<span>No due date</span>'}<span>${esc(t.category)}</span>${open.length > 1 ? `<span>+${open.length - 1} more</span>` : ''}</div>
+  </div>`
+}
+
+// ---------- quick add (straight onto the list, no Jarvis needed) ----------
+let localAdds = store.get('jv-adds', [])
+const saveAdds = () => store.set('jv-adds', localAdds)
+/** Local adds the PC hasn't confirmed yet (a newer list without them means not yet). */
+function pendingAdds() {
+  const titles = new Set((list?.tasks ?? []).map((t) => t.title.toLowerCase()))
+  localAdds = localAdds.filter((a) => !(list && list.at > a.at && titles.has(a.title.toLowerCase())) && Date.now() - a.at < 7 * 86400000)
+  saveAdds()
+  return localAdds
+}
+const addForm = { category: 'SCHOOL', due: '', effort: 'medium' }
+function openSheet(id) {
+  document.querySelectorAll('.sheet').forEach((s) => (s.hidden = s.id !== id))
+  $('#scrim').hidden = false
+  setTimeout(() => document.body.classList.add('sheet-open'), 20)
+  if (id === 'add-sheet') setTimeout(() => $('#add-title').focus(), 250)
+}
+function closeSheets() {
+  document.body.classList.remove('sheet-open')
+  setTimeout(() => {
+    document.querySelectorAll('.sheet').forEach((s) => (s.hidden = true))
+    $('#scrim').hidden = true
+  }, 250)
+}
+function isoDay(offset) {
+  const d = new Date(Date.now() + offset * 86400000)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function pickIn(group, value) {
+  document.querySelectorAll(`[data-${group}]`).forEach((b) => b.classList.toggle('on', b.dataset[group] === value))
+}
+function setupAdd() {
+  $('#add-sheet').addEventListener('click', (e) => {
+    const b = e.target.closest('button')
+    if (!b) return
+    if (b.dataset.cat) { addForm.category = b.dataset.cat; pickIn('cat', b.dataset.cat) }
+    if (b.dataset.day !== undefined) {
+      addForm.due = b.dataset.day === 'pick' ? addForm.due : b.dataset.day === '' ? '' : isoDay(Number(b.dataset.day))
+      pickIn('day', b.dataset.day)
+      if (b.dataset.day === 'pick') { const d = $('#add-date'); d.showPicker?.(); d.focus() }
+    }
+    if (b.dataset.effort) { addForm.effort = b.dataset.effort; pickIn('effort', b.dataset.effort) }
+  })
+  $('#add-date').addEventListener('change', (e) => { addForm.due = e.target.value; pickIn('day', 'pick') })
+  $('#add-form').onsubmit = async (e) => {
+    e.preventDefault()
+    const title = $('#add-title').value.trim()
+    if (!title) return $('#add-title').focus()
+    const a = { id: uid(), title, category: addForm.category, due: addForm.due || null, effort: addForm.effort, at: Date.now() }
+    localAdds.push(a)
+    saveAdds()
+    $('#add-title').value = ''
+    closeSheets()
+    renderList()
+    try {
+      await publish({ t: 'add', id: a.id, task: { title: a.title, category: a.category, due: a.due, effort: a.effort } })
+      toast(online() ? `✓ Added ${a.title}` : `✓ Added. On your PC's list when it turns on`)
+    } catch {
+      a.failed = true
+      saveAdds()
+      toast('No signal. Saved here, will send when you are back online')
+    }
+  }
+  pickIn('cat', addForm.category)
+  pickIn('day', '')
+  pickIn('effort', addForm.effort)
+}
+async function resendAdds() {
+  for (const a of localAdds.filter((x) => x.failed)) {
+    try {
+      await publish({ t: 'add', id: a.id, task: { title: a.title, category: a.category, due: a.due, effort: a.effort } })
+      a.failed = false
+    } catch { /* still offline */ }
+  }
+  saveAdds()
+}
+
+// ---------- photos ----------
+/** Photo -> 1600px JPEG -> sealed -> ntfy attachment. Kept on the phone until Jarvis answers. */
+async function shrink(file, max, quality) {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url })
+    const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight))
+    const c = document.createElement('canvas')
+    c.width = Math.round(img.naturalWidth * scale)
+    c.height = Math.round(img.naturalHeight * scale)
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
+    return c.toDataURL('image/jpeg', quality)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+async function sealBytes(bytes) {
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await key(), bytes))
+  const out = new Uint8Array(12 + ct.length)
+  out.set(iv)
+  out.set(ct, 12)
+  return out
+}
+async function uploadPhoto(m) {
+  const dataUrl = store.get(`jv-photo-${m.id}`, null)
+  if (!dataUrl) throw new Error('photo no longer on this phone')
+  const bytes = b64u.dec(dataUrl.split(',')[1].replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''))
+  const r = await fetch(`${RELAY}/${pair.i}`, {
+    method: 'PUT',
+    body: new Blob([await sealBytes(bytes)]),
+    headers: { Filename: 'p.bin', 'X-Message': await seal({ t: 'photo', id: m.id, text: m.text, at: m.at }) },
+  })
+  if (!r.ok) throw new Error(`relay ${r.status}`)
+}
+async function sendPhoto(file) {
+  const caption = input.value.trim()
+  input.value = ''
+  grow()
+  const m = { id: uid(), me: true, kind: 'photo', text: caption, at: Date.now(), status: 'sending' }
+  try {
+    m.thumb = await shrink(file, 360, 0.6)
+    store.set(`jv-photo-${m.id}`, await shrink(file, 1600, 0.72))
+  } catch {
+    return toast("Couldn't read that photo")
+  }
+  chat.push(m)
+  saveChat()
+  renderChat()
+  renderList()
+  try {
+    await uploadPhoto(m)
+    m.status = 'sent'
+    toast(online() ? '✓ Photo sent. Jarvis is reading it' : '✓ Photo saved. Jarvis reads it when your PC is on (open the app at home)')
+  } catch {
+    m.status = 'failed'
+    toast('No signal. Photo saved here, will send when you are back online')
+  }
+  saveChat()
+  renderChat()
+  renderList()
+  ping()
+}
+// The relay keeps photos 3 hours: anything Jarvis hasn't answered goes again when the app opens.
+async function resendPhotos() {
+  for (const m of chat) {
+    if (m.kind !== 'photo' || !m.me || m.status === 'replied') continue
+    const stale = Date.now() - (m.resent ?? m.at) > 2.5 * 3600_000
+    if (m.status !== 'failed' && !(m.status !== 'ack' && stale)) continue
+    if (Date.now() - m.at > 3 * 86400000) continue
+    try {
+      await uploadPhoto(m)
+      m.status = 'sent'
+      m.resent = Date.now()
+    } catch { /* next time */ }
+  }
+  saveChat()
+}
+function forgetPhoto(id) {
+  try { localStorage.removeItem(`jv-photo-${id}`) } catch { /* fine */ }
+}
+
+// ---------- lock-screen notifications (ntfy app) ----------
+const NTFY_APP = 'https://apps.apple.com/app/ntfy/id1625396347'
+function renderNotifyCard() {
+  const el = $('#notify-card')
+  const topic = store.get('jv-notify-topic', null)
+  if (!topic) return (el.innerHTML = '')
+  el.innerHTML = store.get('jv-notify-ok', false)
+    ? '<button class="linkish" data-open="notify-sheet">🔔 Lock-screen notifications</button>'
+    : `<div class="setup-card"><div><b>Get reminders on your lock screen</b><span>Even when your PC is off. Takes a minute.</span></div><button class="btn small" data-open="notify-sheet">Set up</button></div>`
+}
+function setupNotify() {
+  $('#copy-topic').onclick = async () => {
+    const topic = store.get('jv-notify-topic', '')
+    try {
+      await navigator.clipboard.writeText(topic)
+      toast('Copied. Paste it in ntfy')
+    } catch {
+      $('#topic-text').select?.()
+      toast('Press and hold the name to copy it')
+    }
+  }
+  $('#test-notify').onclick = async () => {
+    const topic = store.get('jv-notify-topic', '')
+    try {
+      await fetch(`${RELAY}/${topic}?title=Jarvis`, { method: 'POST', body: 'Lock-screen notifications work. Nice.', headers: { 'X-Tags': 'white_check_mark' } })
+      toast('Sent. It should pop up in a few seconds')
+    } catch {
+      toast("Couldn't send the test. Check your connection")
+    }
+  }
+  $('#notify-done').onclick = () => {
+    store.set('jv-notify-ok', true)
+    closeSheets()
+    renderNotifyCard()
+  }
+}
+
+// ---------- wiring for the sheets and the camera ----------
+document.addEventListener('click', (e) => {
+  const opener = e.target.closest('[data-open]')
+  if (opener) {
+    e.preventDefault()
+    if (opener.dataset.open === 'notify-sheet') $('#topic-text').value = store.get('jv-notify-topic', '')
+    return openSheet(opener.dataset.open)
+  }
+  if (e.target.closest('[data-photo]')) {
+    e.preventDefault()
+    unlockSpeech()
+    $('#photo-input').click()
+  }
+})
+$('#photo-input').addEventListener('change', (e) => {
+  const f = e.target.files?.[0]
+  e.target.value = ''
+  if (f) sendPhoto(f)
+})
+$('#scrim').onclick = closeSheets
+setupAdd()
+setupNotify()
+renderNotifyCard()
+renderList()
