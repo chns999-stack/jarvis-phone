@@ -366,3 +366,14 @@ main { position: relative; z-index: 1; height: var(--vvh, 100%); display: flex; 
 .island.open { border-radius: 42px; }
 .island-in { padding: 54px 24px 22px 20px; align-items: center; font-size: 16px; }
 .island-dot { width: 34px; height: 34px; }
+
+/* Island v3: centred without transforms (a half-pixel offset blurs text on iPhone),
+   and opened *below* the status bar; it rises back into the island to close. */
+.island {
+  left: 0; right: 0; margin: 0 auto; transform: none;
+  transition: width 0.42s cubic-bezier(0.32, 1.25, 0.5, 1), height 0.42s cubic-bezier(0.32, 1.25, 0.5, 1),
+    top 0.42s cubic-bezier(0.32, 1.25, 0.5, 1), border-radius 0.42s, opacity 0.18s;
+  -webkit-font-smoothing: antialiased;
+}
+.island.open { top: max(calc(env(safe-area-inset-top, 0px) + 6px), 56px); border-radius: 30px; }
+.island-in { padding: 16px 22px 16px 18px; font-size: 16px; }

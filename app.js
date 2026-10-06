@@ -27,7 +27,7 @@ async function relayFetch(topic, opts) {
   return fetch(`${BACKUP}/${topic}`, opts)
 }
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 15
+const VERSION = 16
 // The design file must be the one this code was written for: the home-screen app
 // can hold an older saved copy. A version stamp on its address forces the right one.
 ;(() => {
@@ -1279,13 +1279,15 @@ function showIsland(text, { onTap = null, ms = 3800 } = {}) {
   const inner = el.querySelector('.island-in')
   $('#island-text').textContent = text
   islandTap = onTap
-  const w = Math.min(window.innerWidth - 20, 400)
+  // Whole-pixel side margins on any screen width (a half pixel blurs the text).
+  const W = window.innerWidth
+  const w = W - 2 * Math.round((W - Math.min(W - 24, 400)) / 2)
   inner.style.width = `${w}px`
   el.style.transition = ''
   el.style.transform = ''
   el.classList.add('show')
   // Measure, then grow from the pill on the next frame.
-  const h = Math.max(inner.scrollHeight, 104)
+  const h = Math.round(Math.max(inner.scrollHeight, 64) / 2) * 2
   clearTimeout(islandTimer)
   setTimeout(() => {
     el.style.width = `${w}px`
@@ -1313,7 +1315,7 @@ function closeIsland() {
     if (y0 === null) return
     dy = Math.min(0, e.touches[0].clientY - y0)
     el.style.transition = 'none'
-    el.style.transform = `translateX(-50%) translateY(${dy * 0.6}px) scale(${Math.max(0.6, 1 + dy / 400)})`
+    el.style.transform = `translateY(${Math.round(dy * 0.6)}px) scale(${Math.max(0.6, 1 + dy / 400)})`
   }, { passive: true })
   el.addEventListener('touchend', () => {
     if (y0 === null) return
