@@ -6,7 +6,7 @@
  */
 const RELAY = 'https://ntfy.sh'
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 8
+const VERSION = 9
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -956,7 +956,8 @@ const vv = window.visualViewport
 function fitViewport() {
   const h = vv ? vv.height : window.innerHeight
   document.documentElement.style.setProperty('--vvh', `${Math.round(h)}px`)
-  document.body.classList.toggle('kb', Boolean(vv) && window.innerHeight - vv.height > 120)
+  const typing = ['TEXTAREA', 'INPUT'].includes(document.activeElement?.tagName) && document.activeElement.type !== 'file'
+  document.body.classList.toggle('kb', typing || (Boolean(vv) && window.innerHeight - vv.height > 120))
   if (vv && vv.offsetTop) window.scrollTo(0, 0)
 }
 vv?.addEventListener('resize', fitViewport)
