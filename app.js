@@ -18,7 +18,7 @@ async function relayFetch(topic, opts) {
   return fetch(`${BACKUP}/${topic}`, opts)
 }
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 12
+const VERSION = 13
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -61,7 +61,7 @@ let chat = store.get('jv-chat', []) // { id, me, text, at, status }
 let pendingDone = store.get('jv-pending', {}) // taskId -> true|false while the PC hasn't confirmed
 let lastSeen = store.get('jv-seen', 0) // when Jarvis last answered anything
 let lastId = store.get('jv-last', null)
-let tab = 'list'
+let tab = 'home'
 let unread = 0
 const saveChat = () => store.set('jv-chat', chat.slice(-120))
 const online = () => Date.now() - lastSeen < 150_000
@@ -149,7 +149,8 @@ function receive(m, time) {
     if (mine?.voice && Date.now() - mine.at < 5 * 60_000 && !document.hidden) speak(m.text)
     saveChat()
     renderList()
-    if (tab !== 'chat') { unread++; toast(m.text.length > 70 ? m.text.slice(0, 68) + '…' : m.text) }
+    // Only a reply that just arrived pops up (not old ones replayed from the relay).
+    if (tab !== 'chat' && fresh) { unread++; toast(m.text.length > 140 ? m.text.slice(0, 138) + '…' : m.text, { onTap: () => showTab('chat'), ms: 5500 }) }
     renderChat()
   }
   setStatus()
@@ -160,6 +161,7 @@ function setStatus() {
   const el = $('#status')
   const on = online()
   el.className = `status ${on ? 'on' : 'off'}`
+  $('#status-bar').className = on ? '' : 'off'
   el.querySelector('span').textContent = on ? 'Online' : lastSeen ? `Asleep · seen ${ago(lastSeen)}` : 'Asleep · will get it when your PC is on'
 }
 let pingAt = 0
@@ -250,77 +252,138 @@ const BELL = '<svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h
 
 const FOLDER = '<svg class="folder" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/><path d="M8.5 13.5l2 2 4-4"/></svg>'
 const CLOCK = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>'
-function renderWaiting() {
-  const waiting = chat.filter((m) => m.me && ['sending', 'sent', 'ack', 'failed'].includes(m.status) && Date.now() - m.at < 72 * 3600_000)
-  if (!waiting.length) return ''
-  return `<div class="group waiting"><h3>WAITING FOR JARVIS <span>${waiting.length}</span></h3>${waiting
-    .map((m) => {
-      const note = m.status === 'ack' ? 'Jarvis is on it…' : m.status === 'failed' ? 'No signal · will retry' : m.status === 'sending' ? 'Saving…' : online() ? 'Sent · Jarvis is on it' : '✓ Saved · added when your PC turns on'
-      const what = m.kind === 'photo' ? `📷 Photo${m.text ? `: ${esc(m.text)}` : ''}` : esc(m.text)
-      return `<div class="task wait">${CLOCK}<div class="body"><div class="title">${what}</div><div class="meta"><span>${note}</span></div></div></div>`
-    })
-    .join('')}</div>`
-}
-
 const isDone = (t) => (t.id in pendingDone ? pendingDone[t.id] : Boolean(t.done))
 const LEAVE_MS = 900
 const leaving = {}
 
-function renderList() {
-  const tasks = [...viewTasks(), ...pendingAdds().map((a) => ({ ...a, local: true }))]
-  const open = tasks.filter((t) => !isDone(t))
-  $('#count').textContent = open.length || ''
-  $('#synced').textContent = list ? `Synced ${ago(list.at)}` : ''
-  $('#reminders').innerHTML = viewReminders()
-    .map((r) => `<div class="reminder" data-rem="${esc(r.id)}">${BELL}<span>${esc(r.text)}</span><span class="when">${esc(new Date(r.at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}</span></div>`)
-    .join('')
-  const waitHtml = renderWaiting()
-  if (!tasks.length) {
-    renderNext()
-    $('#tasks').innerHTML = waitHtml + (list
-      ? '<div class="empty"><b>ALL CLEAR</b>Nothing on the list. Type below to add something.</div>'
-      : '<div class="empty"><b>NO LIST YET</b>Your list shows up here once Jarvis is on. You can still send him things now.</div>')
-    return
-  }
-  // Ticked things leave the list (after the tick animation) for FINISHED at the bottom.
-  const now = Date.now()
-  const showOpen = (t) => !isDone(t) || now - (leaving[t.id] ?? 0) < LEAVE_MS
-  const openTasks = tasks.filter(showOpen)
-  const finished = tasks.filter((t) => !showOpen(t)).sort((a, b) => (b.doneAt ?? now) - (a.doneAt ?? now))
-  const groups = {}
-  for (const t of openTasks) (groups[t.category] ??= []).push(t)
-  let i = 0
-  const row = (t, cat) => {
-    const done = isDone(t)
+const ICON = {
+  cal: '<svg viewBox="0 0 24 24"><rect x="4.5" y="5.5" width="15" height="14" rx="1.5"/><path d="M4.5 9.5h15M8.5 3.5v4M15.5 3.5v4"/></svg>',
+  chev: '<svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
+}
+const timeOf = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+const dayOf = (d) => d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+/** A due value as a moment: date-only means the end of that day. */
+const dueAt = (due) => new Date(due.length === 10 ? `${due}T23:59` : due)
+const startOfDay = (offset = 0) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + offset); return d }
+
+/** One task line: tick circle, title, detail, time on the right, chevron to edit. */
+function taskRow(t, { time = '', timeCls = '', sub = null, lead = false } = {}) {
+  const cat = t.category || 'SCHOOL'
+  const acc = CAT[cat] ?? '#2fc6ff'
+  if (t.local) {
     const due = dueOf(t.due)
-    const gone = done && now - (leaving[t.id] ?? 0) < LEAVE_MS ? ' leaving' : ''
-    const meta = done && !gone
-      ? `<span>${esc(cat)}${t.doneAt ? ` · done ${esc(doneLabel(t.doneAt))}` : ''}</span>`
-      : `${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}${t.effort && !done ? `<span>${esc(t.effort)}</span>` : ''}`
-    if (t.local) {
-      return `<div class="task local" style="--c:${CAT[cat] ?? '#19e3ff'}">
-        <span class="check ghost">${CLOCK}</span>
-        <div class="body"><div class="title">${esc(t.title)}</div><div class="meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}<span>${t.failed ? 'not sent yet' : online() ? 'adding…' : 'added when your PC is on'}</span></div></div>
-      </div>`
-    }
-    return `<div class="task${done ? ' done' : ''}${gone}${t.id in pendingDone ? ' pending' : ''}" data-task="${esc(t.id)}" style="--c:${CAT[cat] ?? '#19e3ff'};animation-delay:${gone ? 0 : i++ * 30}ms">
-      <button class="check" data-id="${esc(t.id)}" aria-label="${done ? 'Not done' : 'Done'}">${CHECK}</button>
-      <div class="body"><div class="title">${esc(t.title)}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>
+    return `<div class="row local" style="--c-acc:${acc}">
+      <div class="ico">${CLOCK}</div>
+      <div class="body"><div class="title">${esc(t.title)}</div><div class="sub">${due ? esc(due.text) + '<span class="dot">•</span>' : ''}${t.failed ? 'not sent yet' : online() ? 'adding…' : 'added when your PC is on'}</div></div>
     </div>`
   }
+  const done = isDone(t)
+  const now = Date.now()
+  const gone = done && now - (leaving[t.id] ?? 0) < LEAVE_MS ? ' leaving' : ''
+  const due = dueOf(t.due)
+  const detail = sub ?? (done && !gone
+    ? `${esc(cat)}${t.doneAt ? `<span class="dot">•</span>done ${esc(doneLabel(t.doneAt))}` : ''}`
+    : [due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : '', esc(cat), t.effort ? esc(t.effort) : ''].filter(Boolean).join('<span class="dot">•</span>'))
+  return `<div class="row${done ? ' done' : ''}${gone}${t.id in pendingDone ? ' pending' : ''}${lead ? ' lead' : ''}" data-task="${esc(t.id)}" style="--c-acc:${acc}">
+    <div class="check-wrap"><button class="check" data-id="${esc(t.id)}" aria-label="${done ? 'Not done' : 'Done'}">${CHECK}</button>${done ? '' : '<i class="pip"></i>'}</div>
+    <div class="body"><div class="title">${esc(t.title)}</div>${detail ? `<div class="sub">${detail}</div>` : ''}</div>
+    ${time ? `<div class="time ${timeCls}">${esc(time)}</div>` : ''}${ICON.chev}
+  </div>`
+}
+/** One reminder line: calendar icon, text, when. */
+function remRow(r, { time = '', sub = null } = {}) {
+  const at = new Date(r.at)
+  const detail = sub ?? `${esc(dayOf(at))}<span class="dot">•</span>${esc(timeOf(at))}`
+  return `<div class="row${r.local ? ' local' : ''}" ${r.local ? '' : `data-rem="${esc(r.id)}"`}>
+    <div class="ico">${ICON.cal}</div>
+    <div class="body"><div class="title">${esc(r.text)}</div><div class="sub">${detail}</div></div>
+    ${time ? `<div class="time">${esc(time)}</div>` : ''}${r.local ? '' : ICON.chev}
+  </div>`
+}
+
+function renderWaiting() {
+  const waiting = chat.filter((m) => m.me && ['sending', 'sent', 'ack', 'failed'].includes(m.status) && Date.now() - m.at < 72 * 3600_000)
+  if (!waiting.length) return ''
+  return `<div class="card hud"><div class="card-head"><h3>WAITING FOR JARVIS</h3><span>${waiting.length}</span></div>${waiting
+    .map((m) => {
+      const note = m.status === 'ack' ? 'Jarvis is on it…' : m.status === 'failed' ? 'No signal · will retry' : m.status === 'sending' ? 'Saving…' : online() ? 'Sent · Jarvis is on it' : '✓ Saved · added when your PC turns on'
+      const what = m.kind === 'photo' ? `📷 Photo${m.text ? `: ${esc(m.text)}` : ''}` : esc(m.text)
+      return `<div class="row wait"><div class="ico">${CLOCK}</div><div class="body"><div class="title">${what}</div><div class="sub">${note}</div></div></div>`
+    })
+    .join('')}</div>`
+}
+
+function allTasks() {
+  return [...viewTasks(), ...pendingAdds().map((a) => ({ ...a, local: true }))]
+}
+function allReminders() {
+  return [...viewReminders(), ...pendingRems().map((r) => ({ ...r, local: true }))].sort((a, b) => new Date(a.at) - new Date(b.at))
+}
+
+function renderHome(tasks, rems) {
+  const now = Date.now()
+  const today0 = startOfDay(0), tomorrow0 = startOfDay(1), week = startOfDay(8)
+  const open = tasks.filter((t) => !isDone(t) || now - (leaving[t.id] ?? 0) < LEAVE_MS)
+  // TODAY: due today or overdue, and today's reminders, in time order.
+  const todayItems = [
+    ...open.filter((t) => t.due && dueAt(t.due) < tomorrow0).map((t) => ({ at: dueAt(t.due), html: () => {
+      const d = dueAt(t.due)
+      const late = d < today0
+      const time = late ? 'Overdue' : t.due.length === 10 ? 'Today' : timeOf(d)
+      return taskRow(t, { time, timeCls: late ? 'due late' : '', lead: true, sub: [esc(t.category || ''), t.effort ? esc(t.effort) : ''].filter(Boolean).join('<span class="dot">•</span>') })
+    } })),
+    ...rems.filter((r) => new Date(r.at) < tomorrow0).map((r) => ({ at: new Date(r.at), html: () => remRow(r, { time: timeOf(new Date(r.at)), sub: 'Reminder' }) })),
+  ].sort((a, b) => a.at - b.at)
+  const dateLabel = new Date().toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }).toUpperCase()
+  $('#today').innerHTML = `<div class="card hud"><div class="card-head"><h3>TODAY</h3><span>${esc(dateLabel)}</span></div>${
+    todayItems.length ? todayItems.map((x) => x.html()).join('') : `<div class="empty">${list ? 'Nothing due today. Get ahead on something?' : 'Your list shows up here once Jarvis is on.'}</div>`
+  }</div>`
+  // UPCOMING: the rest of the week.
+  const upcoming = [
+    ...open.filter((t) => t.due && dueAt(t.due) >= tomorrow0 && dueAt(t.due) < week).map((t) => ({ at: dueAt(t.due), html: () => {
+      const d = dueAt(t.due)
+      return taskRow(t, { sub: `${esc(dayOf(d))}${t.due.length > 10 ? `<span class="dot">•</span>${esc(timeOf(d))}` : ''}<span class="dot">•</span>${esc(t.category || '')}` })
+    } })),
+    ...rems.filter((r) => new Date(r.at) >= tomorrow0 && new Date(r.at) < week).map((r) => ({ at: new Date(r.at), html: () => remRow(r) })),
+  ].sort((a, b) => a.at - b.at)
+  $('#upcoming').innerHTML = upcoming.length
+    ? `<div class="sec-title"><h3>UPCOMING</h3><span>THIS WEEK</span></div><div class="card hud">${upcoming.map((x) => x.html()).join('')}</div>`
+    : ''
+  $('#waiting').innerHTML = renderWaiting()
+}
+
+function renderTasks(tasks) {
+  const now = Date.now()
+  const showOpen = (t) => !isDone(t) || now - (leaving[t.id] ?? 0) < LEAVE_MS
+  const openTasks = tasks.filter(showOpen).sort((a, b) => (a.due ? dueAt(a.due) : Infinity) - (b.due ? dueAt(b.due) : Infinity))
+  const finished = tasks.filter((t) => !showOpen(t)).sort((a, b) => (b.doneAt ?? now) - (a.doneAt ?? now))
+  const groups = {}
+  for (const t of openTasks) (groups[t.category || 'SCHOOL'] ??= []).push(t)
   const openHtml = openTasks.length
-    ? Object.entries(groups)
-        .map(([cat, ts]) => `<div class="group"><h3>${esc(cat)} <span>${ts.filter((t) => !isDone(t)).length}</span></h3>${ts.map((t) => row(t, cat)).join('')}</div>`)
-        .join('')
-    : '<div class="empty small"><b>ALL CLEAR</b>Everything is done. Look at you.</div>'
+    ? `<div class="card hud">${Object.entries(groups)
+        .map(([cat, ts]) => `<div class="group-label" style="--c-acc:${CAT[cat] ?? '#2fc6ff'}">${esc(cat)} <span>${ts.filter((t) => !isDone(t)).length}</span></div>${ts.map((t) => taskRow(t)).join('')}`)
+        .join('')}</div>`
+    : `<div class="card hud"><div class="empty"><b>ALL CLEAR</b>${list ? 'Everything is done. Look at you.' : 'Your list shows up here once Jarvis is on.'}</div></div>`
   const finOpen = store.get('jv-fin-open', false)
   const finHtml = finished.length
-    ? `<div class="group finished${finOpen ? ' open' : ''}"><h3 class="fin-toggle">${FOLDER}<b>FINISHED</b><span>${finished.length}</span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></h3><div class="fin-body">${finished.map((t) => row(t, t.category)).join('')}</div></div>`
+    ? `<div class="card hud finished${finOpen ? ' open' : ''}"><button class="fin-toggle">${FOLDER}<b>FINISHED</b><span>${finished.length}</span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button><div class="fin-body">${finished.map((t) => taskRow(t)).join('')}</div></div>`
     : ''
-  $('#tasks').innerHTML = waitHtml + openHtml + finHtml
+  $('#tasks').innerHTML = openHtml + finHtml
+}
+
+function renderReminders(rems) {
+  $('#reminders').innerHTML = `<div class="card hud">${rems.length ? rems.map((r) => remRow(r)).join('') : '<div class="empty"><b>NO REMINDERS</b>Tap + NEW REMINDER, or tell Jarvis "remind me…".</div>'}</div>`
+}
+
+function renderList() {
+  const tasks = allTasks()
+  const rems = allReminders()
+  $('#count').textContent = tasks.filter((t) => !isDone(t)).length || ''
+  $('#synced').textContent = list ? `Synced ${ago(list.at)}` : ''
+  renderHome(tasks, rems)
+  renderTasks(tasks)
+  renderReminders(rems)
   renderNext()
-  // Rows fade in on the first draw only; redraws (a tick, a sync) don't flicker.
-  requestAnimationFrame(() => setTimeout(() => document.body.classList.add('drawn'), 700))
 }
 
 function doneLabel(t) {
@@ -357,20 +420,10 @@ function renderChat() {
 function showTab(t) {
   tab = t
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === t))
-  $('.tabs').dataset.on = t
-  $('#view-list').classList.toggle('on', t === 'list')
-  $('#view-chat').classList.toggle('on', t === 'chat')
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === `view-${t}`))
   if (t === 'chat') { unread = 0; renderChat() }
 }
 
-let toastTimer
-function toast(text) {
-  const el = $('#toast')
-  el.textContent = text
-  el.classList.add('show')
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => el.classList.remove('show'), 3200)
-}
 
 // ---------- globe ----------
 function globe(canvas) {
@@ -454,7 +507,7 @@ if (!pair) {
 } else queueMicrotask(start) // after the whole file has run (later sections declare state start() uses)
 
 document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)))
-$('#tasks').addEventListener('click', (e) => {
+$('.views').addEventListener('click', (e) => {
   if (e.target.closest('.fin-toggle')) {
     store.set('jv-fin-open', !store.get('jv-fin-open', false))
     return renderList()
@@ -482,14 +535,6 @@ $('#form').onsubmit = (e) => {
   grow()
   sendText(text)
 }
-$('#chips').addEventListener('click', (e) => {
-  const b = e.target.closest('button')
-  if (!b || b.dataset.open || b.dataset.photo !== undefined) return
-  if (b.dataset.say) return sendText(b.dataset.say)
-  input.value = b.dataset.fill
-  grow()
-  input.focus()
-})
 $('#refresh').onclick = () => {
   const b = $('#refresh')
   b.classList.add('spin')
@@ -738,14 +783,22 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) chec
 function renderNext() {
   const el = $('#next')
   const open = viewTasks().filter((t) => !isDone(t))
-  const dated = open.filter((t) => t.due).sort((a, b) => new Date(a.due.length === 10 ? a.due + 'T23:59' : a.due) - new Date(b.due.length === 10 ? b.due + 'T23:59' : b.due))
-  const t = dated[0] ?? open[0]
+  const dated = open.filter((t) => t.due).sort((a, b) => dueAt(a.due) - dueAt(b.due))
+  const t = (focusActive() && open.find((x) => x.id === focus.taskId)) || dated[0] || open[0]
   if (!t) return (el.innerHTML = '')
   const due = dueOf(t.due)
-  el.innerHTML = `<div class="next" style="--c:${CAT[t.category] ?? '#19e3ff'}">
-    <div class="next-top"><div class="next-label">NEXT UP</div><button class="next-done" data-done="${esc(t.id)}" aria-label="Mark ${esc(t.title)} done">${CHECK}<span>Done</span></button></div>
+  const acc = CAT[t.category] ?? '#2fc6ff'
+  const f = focusActive() && focus.taskId === t.id
+  el.innerHTML = `<div class="next hud" style="--c-acc:${acc}"><i class="glow"></i>
+    <div class="next-top"><div class="next-label">${f ? 'FOCUSING' : 'NEXT UP'}</div>
+      <div class="next-actions">
+        <button class="next-btn" data-focus="${esc(t.id)}" aria-label="Focus on ${esc(t.title)}"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="7"/><path d="M12 9.5V13l2.5 1.5M10 3.5h4"/></svg><span>${f ? 'Timer' : 'Focus'}</span></button>
+        <button class="next-btn" data-done="${esc(t.id)}" aria-label="Mark ${esc(t.title)} done">${CHECK}<span>Done</span></button>
+      </div>
+    </div>
     <div class="next-title">${esc(t.title)}</div>
     <div class="next-meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : '<span>No due date</span>'}<span>${esc(t.category)}</span>${open.length > 1 ? `<span>+${open.length - 1} more</span>` : ''}</div>
+    ${f ? '<div class="next-focus"><span>LEFT</span><b>--:--</b><div class="bar"><i></i></div></div>' : ''}
   </div>`
 }
 
@@ -918,7 +971,7 @@ function renderNotifyCard() {
   if (!topic) return (el.innerHTML = '')
   el.innerHTML = store.get('jv-notify-ok', false)
     ? '<button class="linkish" data-open="notify-sheet">🔔 Lock-screen notifications</button>'
-    : `<div class="setup-card"><div><b>Get reminders on your lock screen</b><span>Even when your PC is off. Takes a minute.</span></div><button class="btn small" data-open="notify-sheet">Set up</button></div>`
+    : `<div class="setup hud"><div><b>Get reminders on your lock screen</b><span>Even when your PC is off. Takes a minute.</span></div><button class="btn small" data-open="notify-sheet">Set up</button></div>`
 }
 function setupNotify() {
   $('#copy-topic').onclick = async () => {
@@ -954,6 +1007,7 @@ document.addEventListener('click', (e) => {
     e.preventDefault()
     if (opener.dataset.open === 'notify-sheet') $('#topic-text').value = store.get('jv-notify-topic', '')
     if (opener.dataset.open === 'add-sheet') return openAdd()
+    if (opener.dataset.open === 'rem-new') return openRemNew()
     return openSheet(opener.dataset.open)
   }
   if (e.target.closest('[data-photo]')) {
@@ -974,6 +1028,12 @@ renderNotifyCard()
 
 // Done straight from the NEXT UP card: tick it, then the card moves on to the next one.
 $('#next').addEventListener('click', (e) => {
+  const fb = e.target.closest('[data-focus]')
+  if (fb) {
+    const ft = viewTasks().find((x) => x.id === fb.dataset.focus)
+    if (ft) openFocus(ft)
+    return
+  }
   const b = e.target.closest('[data-done]')
   if (!b) return
   const t = viewTasks().find((x) => x.id === b.dataset.done)
@@ -1112,6 +1172,9 @@ function localDateTime(iso) {
 }
 function openRem(r) {
   editingRem = r.id
+  $('#rem-sheet h2').textContent = 'Edit reminder'
+  $('#rem-form [type=submit]').textContent = 'Save changes'
+  $('#rem-delete').hidden = false
   $('#rem-text').value = r.text
   $('#rem-when').value = localDateTime(r.at)
   const del = $('#rem-delete')
@@ -1128,6 +1191,15 @@ function setupEdit() {
     if (!text) return $('#rem-text').focus()
     if (!when) return $('#rem-when').focus()
     const at = new Date(when).toISOString()
+    if (!editingRem) {
+      const r = { id: uid(), text, at, stamp: Date.now() }
+      remAdds.push(r)
+      store.set('jv-rem-adds', remAdds)
+      closeSheets()
+      renderList()
+      const ok = await sendOrQueue({ t: 'remind-add', id: r.id, text, at })
+      return toast(!ok ? '✓ Saved here. Sends when the connection is back' : online() ? '✓ Reminder set' : '✓ Saved. Your PC sets it when it turns on')
+    }
     const id = editingRem
     remEdits[id] = { text, at, stamp: Date.now() }
     saveOverlays()
@@ -1153,14 +1225,14 @@ function setupEdit() {
     toast(ok ? 'Reminder deleted' : 'Deleted here. Sends when the connection is back')
   }
   // Tap a task (not its tick) or a reminder to edit it.
-  $('#tasks').addEventListener('click', (e) => {
+  $('.views').addEventListener('click', (e) => {
     if (e.target.closest('.check, .fin-toggle')) return
-    const row = e.target.closest('.task[data-task]')
+    const row = e.target.closest('.row[data-task]')
     if (!row) return
     const t = viewTasks().find((x) => x.id === row.dataset.task)
     if (t) openEdit(t)
   })
-  $('#reminders').addEventListener('click', (e) => {
+  $('.views').addEventListener('click', (e) => {
     const row = e.target.closest('[data-rem]')
     if (!row) return
     const r = viewReminders().find((x) => x.id === row.dataset.rem)
@@ -1169,3 +1241,148 @@ function setupEdit() {
 }
 
 setupEdit()
+
+// ---------- the island pop-up ----------
+/**
+ * Pop-ups grow out of the Dynamic Island: a black pill the island's size
+ * fades in over it, stretches into a card, and on close (or a swipe up)
+ * shrinks back to the pill and disappears into the island.
+ */
+let islandTimer = null
+let islandTap = null
+function toast(text, { onTap = null, ms = 3800 } = {}) {
+  const el = $('#island')
+  const inner = el.querySelector('.island-in')
+  $('#island-text').textContent = text
+  islandTap = onTap
+  const w = Math.min(window.innerWidth * 0.92, 380)
+  inner.style.width = `${w}px`
+  el.style.transition = ''
+  el.style.transform = ''
+  el.classList.add('show')
+  // Measure, then grow from the pill on the next frame.
+  const h = Math.max(inner.scrollHeight, 62)
+  clearTimeout(islandTimer)
+  setTimeout(() => {
+    el.style.width = `${w}px`
+    el.style.height = `${h}px`
+    el.classList.add('open')
+  }, 60)
+  islandTimer = setTimeout(closeIsland, ms)
+}
+function closeIsland() {
+  const el = $('#island')
+  clearTimeout(islandTimer)
+  el.style.transition = ''
+  el.style.transform = ''
+  el.classList.remove('open')
+  el.style.width = ''
+  el.style.height = ''
+  islandTimer = setTimeout(() => el.classList.remove('show'), 380)
+}
+;(() => {
+  const el = $('#island')
+  let y0 = null
+  let dy = 0
+  el.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; dy = 0; clearTimeout(islandTimer) }, { passive: true })
+  el.addEventListener('touchmove', (e) => {
+    if (y0 === null) return
+    dy = Math.min(0, e.touches[0].clientY - y0)
+    el.style.transition = 'none'
+    el.style.transform = `translateX(-50%) translateY(${dy * 0.6}px) scale(${Math.max(0.6, 1 + dy / 400)})`
+  }, { passive: true })
+  el.addEventListener('touchend', () => {
+    if (y0 === null) return
+    y0 = null
+    if (dy < -18) return closeIsland() // swiped up: back into the island
+    el.style.transition = ''
+    el.style.transform = ''
+    if (Math.abs(dy) < 6 && islandTap) { islandTap(); return closeIsland() }
+    islandTimer = setTimeout(closeIsland, 2500)
+  })
+  el.addEventListener('click', () => { if (islandTap) { islandTap(); closeIsland() } })
+})()
+
+// ---------- focus timer ----------
+let focus = store.get('jv-focus', null) // { taskId, title, minutes, start, end }
+let focusTask = null
+let focusMin = 25
+const focusActive = () => focus && focus.end > Date.now()
+function openFocus(t) {
+  focusTask = t
+  $('#focus-task').textContent = focusActive() ? `Focusing on ${focus.title}` : t.title
+  $('#focus-island').checked = store.get('jv-island-timer', false)
+  focusMin = 25
+  document.querySelectorAll('[data-min]').forEach((b) => b.classList.toggle('on', b.dataset.min === '25'))
+  $('#focus-stop').hidden = !focusActive()
+  openSheet('focus-sheet')
+}
+function setupFocus() {
+  $('#focus-sheet').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-min]')
+    if (!b) return
+    focusMin = Number(b.dataset.min)
+    document.querySelectorAll('[data-min]').forEach((x) => x.classList.toggle('on', x === b))
+  })
+  $('#focus-island').addEventListener('change', (e) => store.set('jv-island-timer', e.target.checked))
+  $('#focus-go').onclick = async () => {
+    const t = focusTask
+    if (!t) return
+    focus = { taskId: t.id, title: t.title, minutes: focusMin, start: Date.now(), end: Date.now() + focusMin * 60_000 }
+    store.set('jv-focus', focus)
+    closeSheets()
+    renderNext()
+    const ok = await sendOrQueue({ t: 'focus', id: uid(), minutes: focusMin, task: t.title, sentAt: Date.now() })
+    toast(`Focus: ${focusMin} min on ${t.title}${ok ? '' : ' (PC timer starts when the connection is back)'}`)
+    // The Dynamic Island countdown: Apple's Clock timer, started by the "Jarvis Focus" shortcut.
+    if ($('#focus-island').checked) {
+      setTimeout(() => { location.href = `shortcuts://run-shortcut?name=${encodeURIComponent('Jarvis Focus')}&input=text&text=${focusMin}` }, 600)
+    }
+  }
+  $('#focus-stop').onclick = async () => {
+    focus = null
+    store.set('jv-focus', null)
+    closeSheets()
+    renderNext()
+    await sendOrQueue({ t: 'focus-stop', id: uid() })
+    toast('Focus stopped')
+  }
+  // The countdown on the NEXT UP card.
+  setInterval(() => {
+    const el = document.querySelector('.next-focus')
+    if (!focus) return
+    if (!focusActive()) {
+      focus = null
+      store.set('jv-focus', null)
+      renderNext()
+      toast('Focus done. Nice work. Tap Done if you finished it.')
+      return
+    }
+    if (!el) return renderNext()
+    const left = focus.end - Date.now()
+    el.querySelector('b').textContent = `${Math.floor(left / 60000)}:${String(Math.floor((left % 60000) / 1000)).padStart(2, '0')}`
+    el.querySelector('.bar i').style.width = `${100 - (left / (focus.end - focus.start)) * 100}%`
+  }, 1000)
+}
+
+// ---------- new reminders from the phone ----------
+let remAdds = store.get('jv-rem-adds', []) // { id, text, at, stamp }
+function pendingRems() {
+  remAdds = remAdds.filter((r) => !(list && list.at > r.stamp) && Date.now() - r.stamp < 7 * 86400000)
+  store.set('jv-rem-adds', remAdds)
+  return remAdds
+}
+function openRemNew() {
+  editingRem = null
+  $('#rem-sheet h2').textContent = 'New reminder'
+  $('#rem-form [type=submit]').textContent = 'Add reminder'
+  $('#rem-delete').hidden = true
+  $('#rem-text').value = ''
+  const d = new Date(Date.now() + 3600_000)
+  d.setMinutes(0, 0, 0)
+  $('#rem-when').value = localDateTime(d.toISOString())
+  openSheet('rem-sheet')
+  setTimeout(() => $('#rem-text').focus(), 250)
+}
+
+setupFocus()
