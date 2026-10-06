@@ -27,7 +27,13 @@ async function relayFetch(topic, opts) {
   return fetch(`${BACKUP}/${topic}`, opts)
 }
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 14
+const VERSION = 15
+// The design file must be the one this code was written for: the home-screen app
+// can hold an older saved copy. A version stamp on its address forces the right one.
+;(() => {
+  const css = document.getElementById('css')
+  if (css && !css.href.includes(`v=${VERSION}`)) css.href = `style.css?v=${VERSION}`
+})()
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -208,7 +214,9 @@ async function resendOld() {
   for (const m of chat) {
     if (!m.me || m.kind === 'photo') continue
     const age = Date.now() - m.at
-    if (m.status === 'failed' || (m.status === 'sent' && age > 11 * 3600_000 && age < 72 * 3600_000 && Date.now() - (m.resent ?? 0) > 11 * 3600_000)) {
+    // No answer 2 minutes after Jarvis was online: ask again (he re-sends the same answer, he doesn't redo it).
+    const lostAnswer = ['sent', 'ack'].includes(m.status) && online() && age > 120_000 && age < 24 * 3600_000 && Date.now() - (m.resent ?? 0) > 120_000
+    if (m.status === 'failed' || lostAnswer || (m.status === 'sent' && age > 11 * 3600_000 && age < 72 * 3600_000 && Date.now() - (m.resent ?? 0) > 11 * 3600_000)) {
       try {
         await publish({ t: 'msg', id: m.id, text: m.text, at: m.at })
         m.status = 'sent'
@@ -502,7 +510,7 @@ function start() {
   flushOutbox()
   setInterval(flushOutbox, 30_000)
   renderNotifyCard()
-  setInterval(() => { setStatus(); renderList() }, 30_000)
+  setInterval(() => { setStatus(); renderList(); resendOld() }, 30_000)
 }
 
 if (!pair) {
@@ -1271,13 +1279,13 @@ function showIsland(text, { onTap = null, ms = 3800 } = {}) {
   const inner = el.querySelector('.island-in')
   $('#island-text').textContent = text
   islandTap = onTap
-  const w = Math.min(window.innerWidth * 0.92, 380)
+  const w = Math.min(window.innerWidth - 20, 400)
   inner.style.width = `${w}px`
   el.style.transition = ''
   el.style.transform = ''
   el.classList.add('show')
   // Measure, then grow from the pill on the next frame.
-  const h = Math.max(inner.scrollHeight, 62)
+  const h = Math.max(inner.scrollHeight, 104)
   clearTimeout(islandTimer)
   setTimeout(() => {
     el.style.width = `${w}px`
@@ -1402,3 +1410,15 @@ function openRemNew() {
 }
 
 setupFocus()
+
+// ---------- the top bar hides while scrolling down, comes back scrolling up ----------
+document.querySelectorAll('.view').forEach((v) => {
+  let last = 0
+  v.addEventListener('scroll', () => {
+    const y = v.scrollTop
+    if (y > last + 6 && y > 40) document.body.classList.add('scrolled')
+    else if (y < last - 6 || y < 20) document.body.classList.remove('scrolled')
+    last = y
+  }, { passive: true })
+})
+document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => document.body.classList.remove('scrolled')))

@@ -356,3 +356,13 @@ main { position: relative; z-index: 1; height: var(--vvh, 100%); display: flex; 
 .btn.small { border-radius: 10px; }
 .topic input { border-radius: 10px; }
 .pair input { border-radius: 12px; }
+
+/* Scrolling down tucks the JARVIS header away; scrolling up brings it back. */
+.top { max-height: 140px; transition: max-height 0.28s ease, opacity 0.2s ease, padding 0.28s ease; overflow: hidden; }
+.scrolled .top { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; }
+
+/* The expanded island: like Apple's, nearly full width with the content *below*
+   the cutout (the clock and battery draw over the top strip of the screen). */
+.island.open { border-radius: 42px; }
+.island-in { padding: 54px 24px 22px 20px; align-items: center; font-size: 16px; }
+.island-dot { width: 34px; height: 34px; }
