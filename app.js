@@ -4,6 +4,15 @@
  * pairing link (it lives only in this phone and on the PC). Messages typed
  * while the PC is off wait at ntfy (12 h) until Jarvis starts.
  */
+// Errors on the phone get reported to the PC with the next ping (Jarvis logs them).
+const jvErrors = []
+const noteError = (msg) => { jvErrors.push(String(msg).slice(0, 300)); if (jvErrors.length > 6) jvErrors.shift() }
+window.addEventListener('error', (e) => noteError(`${e.message} @${e.lineno}:${e.colno}`))
+window.addEventListener('unhandledrejection', (e) => noteError(`promise: ${e.reason?.message ?? e.reason}`))
+// The island pop-up's state lives up here so nothing later can leave it uninitialised.
+let islandTimer = null
+let islandTap = null
+let islandShown = 0
 const RELAY = 'https://ntfy.sh'
 // ntfy.sh allows 250 messages a day per connection; past that, the backup carries them.
 const BACKUP = 'https://ntfy.envs.net'
@@ -18,7 +27,7 @@ async function relayFetch(topic, opts) {
   return fetch(`${BACKUP}/${topic}`, opts)
 }
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 13
+const VERSION = 14
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -168,7 +177,8 @@ let pingAt = 0
 function ping() {
   if (Date.now() - pingAt < 20_000) return
   pingAt = Date.now()
-  publish({ t: 'ping', at: Date.now(), v: VERSION, voice: Boolean(window.SpeechRecognition || window.webkitSpeechRecognition), standalone: Boolean(navigator.standalone) }).catch(() => {})
+  const island = $('#island')
+  publish({ t: 'ping', at: Date.now(), v: VERSION, voice: Boolean(window.SpeechRecognition || window.webkitSpeechRecognition), standalone: Boolean(navigator.standalone), errors: jvErrors.slice(), toasts: islandShown, safeTop: getComputedStyle(document.documentElement).getPropertyValue('--safe-t') || null, islandCss: island ? getComputedStyle(island).position + '/' + getComputedStyle(island).top : 'missing' }).catch(() => {})
 }
 
 // ---------- sending ----------
@@ -1248,9 +1258,15 @@ setupEdit()
  * fades in over it, stretches into a card, and on close (or a swipe up)
  * shrinks back to the pill and disappears into the island.
  */
-let islandTimer = null
-let islandTap = null
-function toast(text, { onTap = null, ms = 3800 } = {}) {
+function toast(text, opts) {
+  try {
+    showIsland(text, opts)
+  } catch (e) {
+    noteError(`island: ${e.message}`)
+  }
+}
+function showIsland(text, { onTap = null, ms = 3800 } = {}) {
+  islandShown++
   const el = $('#island')
   const inner = el.querySelector('.island-in')
   $('#island-text').textContent = text
