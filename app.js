@@ -6,7 +6,7 @@
  */
 const RELAY = 'https://ntfy.sh'
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 9
+const VERSION = 11
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -55,6 +55,26 @@ const saveChat = () => store.set('jv-chat', chat.slice(-120))
 const online = () => Date.now() - lastSeen < 150_000
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
+// Changes that couldn't be sent (no signal, relay busy) wait here and go when they can.
+let outbox = store.get('jv-outbox', [])
+async function sendOrQueue(obj) {
+  try {
+    await publish(obj)
+    return true
+  } catch {
+    outbox.push(obj)
+    store.set('jv-outbox', outbox)
+    return false
+  }
+}
+async function flushOutbox() {
+  const items = outbox
+  outbox = []
+  for (const o of items) {
+    try { await publish(o) } catch { outbox.push(o) }
+  }
+  store.set('jv-outbox', outbox)
+}
 async function publish(obj) {
   const r = await fetch(`${RELAY}/${pair.i}`, { method: 'POST', body: await seal(obj) })
   if (!r.ok) throw new Error(`relay ${r.status}`)
@@ -94,6 +114,7 @@ function receive(m, time) {
       store.set('jv-list', list)
       // Anything the PC now agrees with is no longer pending.
       for (const t of list.tasks) if (t.id in pendingDone && Boolean(t.done) === pendingDone[t.id]) delete pendingDone[t.id]
+      pruneOverlays(m.at)
       store.set('jv-pending', pendingDone)
       renderList()
     }
@@ -180,15 +201,9 @@ async function toggleTask(t) {
     setTimeout(renderList, LEAVE_MS + 20)
   } else delete leaving[t.id]
   renderList()
-  try {
-    await publish({ t: want ? 'done' : 'undo', id: uid(), task: t.id })
-    if (!online()) toast(want ? 'Checked off. Jarvis will update when your PC is on.' : 'Unchecked.')
-  } catch {
-    delete pendingDone[t.id]
-    store.set('jv-pending', pendingDone)
-    renderList()
-    toast("Couldn't reach the relay. Check your connection.")
-  }
+  const ok = await sendOrQueue({ t: want ? 'done' : 'undo', id: uid(), task: t.id })
+  if (!ok) toast('Saved here. Sends when the connection is back')
+  else if (!online()) toast(want ? 'Checked off. Jarvis will update when your PC is on.' : 'Unchecked.')
 }
 
 // ---------- rendering ----------
@@ -237,12 +252,12 @@ const LEAVE_MS = 900
 const leaving = {}
 
 function renderList() {
-  const tasks = [...(list?.tasks ?? []), ...pendingAdds().map((a) => ({ ...a, local: true }))]
+  const tasks = [...viewTasks(), ...pendingAdds().map((a) => ({ ...a, local: true }))]
   const open = tasks.filter((t) => !isDone(t))
   $('#count').textContent = open.length || ''
   $('#synced').textContent = list ? `Synced ${ago(list.at)}` : ''
-  $('#reminders').innerHTML = (list?.reminders ?? [])
-    .map((r) => `<div class="reminder">${BELL}<span>${esc(r.text)}</span><span class="when">${esc(new Date(r.at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}</span></div>`)
+  $('#reminders').innerHTML = viewReminders()
+    .map((r) => `<div class="reminder" data-rem="${esc(r.id)}">${BELL}<span>${esc(r.text)}</span><span class="when">${esc(new Date(r.at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}</span></div>`)
     .join('')
   const waitHtml = renderWaiting()
   if (!tasks.length) {
@@ -273,7 +288,7 @@ function renderList() {
         <div class="body"><div class="title">${esc(t.title)}</div><div class="meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : ''}<span>${t.failed ? 'not sent yet' : online() ? 'adding…' : 'added when your PC is on'}</span></div></div>
       </div>`
     }
-    return `<div class="task${done ? ' done' : ''}${gone}${t.id in pendingDone ? ' pending' : ''}" style="--c:${CAT[cat] ?? '#19e3ff'};animation-delay:${gone ? 0 : i++ * 30}ms">
+    return `<div class="task${done ? ' done' : ''}${gone}${t.id in pendingDone ? ' pending' : ''}" data-task="${esc(t.id)}" style="--c:${CAT[cat] ?? '#19e3ff'};animation-delay:${gone ? 0 : i++ * 30}ms">
       <button class="check" data-id="${esc(t.id)}" aria-label="${done ? 'Not done' : 'Done'}">${CHECK}</button>
       <div class="body"><div class="title">${esc(t.title)}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>
     </div>`
@@ -406,6 +421,8 @@ function start() {
   resendOld()
   resendPhotos()
   resendAdds()
+  flushOutbox()
+  setInterval(flushOutbox, 30_000)
   renderNotifyCard()
   setInterval(() => { setStatus(); renderList() }, 30_000)
 }
@@ -429,7 +446,7 @@ $('#tasks').addEventListener('click', (e) => {
   }
   const b = e.target.closest('.check')
   if (!b) return
-  const t = list?.tasks.find((x) => x.id === b.dataset.id)
+  const t = viewTasks().find((x) => x.id === b.dataset.id)
   if (t) toggleTask(t)
 })
 const input = $('#input')
@@ -473,6 +490,7 @@ document.addEventListener('visibilitychange', () => {
   resendOld()
   resendPhotos()
   resendAdds()
+  flushOutbox()
 })
 grow()
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {})
@@ -704,7 +722,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) chec
 // ---------- next up ----------
 function renderNext() {
   const el = $('#next')
-  const open = (list?.tasks ?? []).filter((t) => !isDone(t))
+  const open = viewTasks().filter((t) => !isDone(t))
   const dated = open.filter((t) => t.due).sort((a, b) => new Date(a.due.length === 10 ? a.due + 'T23:59' : a.due) - new Date(b.due.length === 10 ? b.due + 'T23:59' : b.due))
   const t = dated[0] ?? open[0]
   if (!t) return (el.innerHTML = '')
@@ -755,13 +773,15 @@ function setupAdd() {
     if (b.dataset.day !== undefined) {
       addForm.due = b.dataset.day === 'pick' ? addForm.due : b.dataset.day === '' ? '' : isoDay(Number(b.dataset.day))
       pickIn('day', b.dataset.day)
-      if (b.dataset.day === 'pick') { const d = $('#add-date'); d.showPicker?.(); d.focus() }
+      if (b.dataset.day === 'pick') { const d = $('#add-date'); d.value = addForm.due || ''; d.showPicker?.(); d.focus() }
+      setPickLabel()
     }
     if (b.dataset.effort) { addForm.effort = b.dataset.effort; pickIn('effort', b.dataset.effort) }
   })
-  $('#add-date').addEventListener('change', (e) => { addForm.due = e.target.value; pickIn('day', 'pick') })
+  $('#add-date').addEventListener('change', (e) => { addForm.due = e.target.value; pickIn('day', 'pick'); setPickLabel() })
   $('#add-form').onsubmit = async (e) => {
     e.preventDefault()
+    if (editingId) return saveEdit()
     const title = $('#add-title').value.trim()
     if (!title) return $('#add-title').focus()
     const a = { id: uid(), title, category: addForm.category, due: addForm.due || null, effort: addForm.effort, at: Date.now() }
@@ -918,6 +938,7 @@ document.addEventListener('click', (e) => {
   if (opener) {
     e.preventDefault()
     if (opener.dataset.open === 'notify-sheet') $('#topic-text').value = store.get('jv-notify-topic', '')
+    if (opener.dataset.open === 'add-sheet') return openAdd()
     return openSheet(opener.dataset.open)
   }
   if (e.target.closest('[data-photo]')) {
@@ -935,18 +956,17 @@ $('#scrim').onclick = closeSheets
 setupAdd()
 setupNotify()
 renderNotifyCard()
-renderList()
 
 // Done straight from the NEXT UP card: tick it, then the card moves on to the next one.
 $('#next').addEventListener('click', (e) => {
   const b = e.target.closest('[data-done]')
   if (!b) return
-  const t = list?.tasks.find((x) => x.id === b.dataset.done)
+  const t = viewTasks().find((x) => x.id === b.dataset.done)
   if (!t) return
   b.closest('.next').classList.add('finishing')
   setTimeout(() => {
     toggleTask(t)
-    const after = (list?.tasks ?? []).filter((x) => !isDone(x))
+    const after = viewTasks().filter((x) => !isDone(x))
     toast(after.length ? `Nice. ${after.length} to go` : 'Nice. That was the last one')
   }, 450)
 })
@@ -966,3 +986,171 @@ window.addEventListener('resize', fitViewport)
 document.addEventListener('focusin', () => setTimeout(fitViewport, 50))
 document.addEventListener('focusout', () => setTimeout(fitViewport, 50))
 fitViewport()
+
+// ---------- editing tasks and reminders ----------
+/**
+ * Edits show at once (an overlay on the last list) and go to the PC like a
+ * tick does; the overlay is dropped once a newer list from the PC has them.
+ */
+let edits = store.get('jv-edits', {}) // taskId -> { patch, at }
+let gone = store.get('jv-gone', {}) // taskId -> at
+let remEdits = store.get('jv-rem-edits', {}) // reminderId -> { text, at, stamp }
+let remGone = store.get('jv-rem-gone', {}) // reminderId -> stamp
+function saveOverlays() {
+  store.set('jv-edits', edits)
+  store.set('jv-gone', gone)
+  store.set('jv-rem-edits', remEdits)
+  store.set('jv-rem-gone', remGone)
+}
+function pruneOverlays(stateAt) {
+  for (const [k, v] of Object.entries(edits)) if (v.at < stateAt) delete edits[k]
+  for (const [k, v] of Object.entries(gone)) if (v < stateAt) delete gone[k]
+  for (const [k, v] of Object.entries(remEdits)) if (v.stamp < stateAt) delete remEdits[k]
+  for (const [k, v] of Object.entries(remGone)) if (v < stateAt) delete remGone[k]
+  saveOverlays()
+}
+function viewTasks() {
+  return (list?.tasks ?? []).filter((t) => !gone[t.id]).map((t) => (edits[t.id] ? { ...t, ...edits[t.id].patch } : t))
+}
+function viewReminders() {
+  return (list?.reminders ?? []).filter((r) => !remGone[r.id]).map((r) => (remEdits[r.id] ? { ...r, text: remEdits[r.id].text, at: remEdits[r.id].at } : r))
+}
+
+let editingId = null
+let editTime = '' // a due time ("T23:59") kept when only the day changes
+function dayLabel(iso) {
+  return new Date(`${iso}T12:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+}
+function setPickLabel() {
+  const b = document.querySelector('[data-day="pick"]')
+  const custom = addForm.due && addForm.due !== isoDay(0) && addForm.due !== isoDay(1)
+  b.textContent = custom ? dayLabel(addForm.due) : 'Pick date'
+}
+function openAdd() {
+  editingId = null
+  editTime = ''
+  $('#add-sheet h2').textContent = 'New task'
+  $('#add-form [type=submit]').textContent = 'Add to list'
+  $('#add-delete').hidden = true
+  $('#add-title').value = ''
+  Object.assign(addForm, { category: 'SCHOOL', due: '', effort: 'medium' })
+  pickIn('cat', addForm.category)
+  pickIn('day', '')
+  pickIn('effort', addForm.effort)
+  setPickLabel()
+  openSheet('add-sheet')
+}
+function openEdit(t) {
+  editingId = t.id
+  const day = t.due ? t.due.slice(0, 10) : ''
+  editTime = t.due && t.due.length > 10 ? t.due.slice(10) : ''
+  $('#add-sheet h2').textContent = 'Edit task'
+  $('#add-form [type=submit]').textContent = 'Save changes'
+  const del = $('#add-delete')
+  del.hidden = false
+  del.textContent = 'Delete task'
+  del.classList.remove('armed')
+  $('#add-title').value = t.title
+  Object.assign(addForm, { category: t.category || 'SCHOOL', due: day, effort: t.effort || 'medium' })
+  pickIn('cat', addForm.category)
+  pickIn('day', !day ? '' : day === isoDay(0) ? '0' : day === isoDay(1) ? '1' : 'pick')
+  pickIn('effort', addForm.effort)
+  setPickLabel()
+  openSheet('add-sheet')
+}
+async function saveEdit() {
+  const id = editingId
+  const title = $('#add-title').value.trim()
+  if (!title) return $('#add-title').focus()
+  const patch = { title, category: addForm.category, due: addForm.due ? addForm.due + editTime : null, effort: addForm.effort }
+  edits[id] = { patch, at: Date.now() }
+  saveOverlays()
+  closeSheets()
+  renderList()
+  const ok = await sendOrQueue({ t: 'edit', id: uid(), task: id, patch })
+  toast(!ok ? '✓ Saved here. Sends when the connection is back' : online() ? '✓ Saved' : '✓ Saved. Your PC gets the change when it turns on')
+}
+async function deleteTask() {
+  const b = $('#add-delete')
+  // Two taps: the first one arms it.
+  if (!b.classList.contains('armed')) {
+    b.classList.add('armed')
+    b.textContent = 'Tap again to delete'
+    setTimeout(() => { b.classList.remove('armed'); b.textContent = 'Delete task' }, 3000)
+    return
+  }
+  const id = editingId
+  gone[id] = Date.now()
+  saveOverlays()
+  closeSheets()
+  renderList()
+  const ok = await sendOrQueue({ t: 'delete', id: uid(), task: id })
+  toast(ok ? 'Deleted' : 'Deleted here. Sends when the connection is back')
+}
+
+// Reminders
+let editingRem = null
+function localDateTime(iso) {
+  const d = new Date(iso)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+function openRem(r) {
+  editingRem = r.id
+  $('#rem-text').value = r.text
+  $('#rem-when').value = localDateTime(r.at)
+  const del = $('#rem-delete')
+  del.textContent = 'Delete reminder'
+  del.classList.remove('armed')
+  openSheet('rem-sheet')
+}
+function setupEdit() {
+  $('#add-delete').onclick = deleteTask
+  $('#rem-form').onsubmit = async (e) => {
+    e.preventDefault()
+    const text = $('#rem-text').value.trim()
+    const when = $('#rem-when').value
+    if (!text) return $('#rem-text').focus()
+    if (!when) return $('#rem-when').focus()
+    const at = new Date(when).toISOString()
+    const id = editingRem
+    remEdits[id] = { text, at, stamp: Date.now() }
+    saveOverlays()
+    closeSheets()
+    renderList()
+    const ok = await sendOrQueue({ t: 'remind-edit', id: uid(), reminder: id, text, at })
+    toast(!ok ? '✓ Saved here. Sends when the connection is back' : online() ? '✓ Reminder updated' : '✓ Saved. Your PC gets the change when it turns on')
+  }
+  $('#rem-delete').onclick = async () => {
+    const b = $('#rem-delete')
+    if (!b.classList.contains('armed')) {
+      b.classList.add('armed')
+      b.textContent = 'Tap again to delete'
+      setTimeout(() => { b.classList.remove('armed'); b.textContent = 'Delete reminder' }, 3000)
+      return
+    }
+    const id = editingRem
+    remGone[id] = Date.now()
+    saveOverlays()
+    closeSheets()
+    renderList()
+    const ok = await sendOrQueue({ t: 'remind-delete', id: uid(), reminder: id })
+    toast(ok ? 'Reminder deleted' : 'Deleted here. Sends when the connection is back')
+  }
+  // Tap a task (not its tick) or a reminder to edit it.
+  $('#tasks').addEventListener('click', (e) => {
+    if (e.target.closest('.check, .fin-toggle')) return
+    const row = e.target.closest('.task[data-task]')
+    if (!row) return
+    const t = viewTasks().find((x) => x.id === row.dataset.task)
+    if (t) openEdit(t)
+  })
+  $('#reminders').addEventListener('click', (e) => {
+    const row = e.target.closest('[data-rem]')
+    if (!row) return
+    const r = viewReminders().find((x) => x.id === row.dataset.rem)
+    if (r) openRem(r)
+  })
+}
+
+setupEdit()

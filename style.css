@@ -273,3 +273,12 @@ main { height: var(--vvh, 100%); }
 .kb .top { display: none; }
 .kb main { padding-top: 6px; }
 .kb .tabs { margin-top: 0; }
+
+/* editing */
+.task[data-task] .body, .reminder[data-rem] { cursor: pointer; }
+.task[data-task]:active { background: rgba(25, 227, 255, 0.1); }
+.reminder[data-rem]:active { background: rgba(240, 169, 60, 0.14); }
+.btn.danger { background: none; color: var(--red); border-color: rgba(255, 77, 94, 0.5); box-shadow: none; margin-top: 10px; font-weight: 500; }
+.btn.danger.armed { background: var(--red); color: #fff; border-color: var(--red); }
+.field { width: 100%; padding: 14px; border-radius: 14px; border: 1px solid rgba(25, 227, 255, 0.4); background: rgba(6, 20, 30, 0.9); font-size: 17px; color: var(--ice); outline: 0; color-scheme: dark; }
+.field:focus { border-color: var(--cyan); box-shadow: 0 0 18px rgba(25, 227, 255, 0.25); }

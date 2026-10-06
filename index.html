@@ -121,6 +121,20 @@
         <button type="button" data-effort="large">Big</button>
       </div>
       <button class="btn wide" type="submit">Add to list</button>
+      <button id="add-delete" class="btn wide danger" type="button" hidden>Delete task</button>
+    </form>
+  </section>
+
+  <!-- Editing a reminder. -->
+  <section id="rem-sheet" class="sheet" hidden>
+    <div class="grab"></div>
+    <h2>Edit reminder</h2>
+    <form id="rem-form">
+      <input id="rem-text" class="field" placeholder="Remind me to…" autocomplete="off" />
+      <label>When</label>
+      <input id="rem-when" class="field" type="datetime-local" />
+      <button class="btn wide" type="submit">Save changes</button>
+      <button id="rem-delete" class="btn wide danger" type="button">Delete reminder</button>
     </form>
   </section>
 
