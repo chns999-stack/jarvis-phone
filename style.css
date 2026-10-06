@@ -253,3 +253,11 @@ main {
 .topic { display: flex; gap: 8px; margin-top: 8px; }
 .topic input { flex: 1; min-width: 0; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: rgba(6, 20, 30, 0.9); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--ice); }
 .fine { color: var(--mute); font-size: 12px; line-height: 1.45; }
+
+/* Done on the NEXT UP card */
+.next-top { display: flex; align-items: center; justify-content: space-between; position: relative; z-index: 1; }
+.next-done { display: flex; align-items: center; gap: 6px; padding: 7px 14px 7px 10px; border-radius: 999px; border: 1px solid var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--ice); font-size: 13px; letter-spacing: 0.08em; }
+.next-done svg { width: 16px; height: 16px; fill: none; stroke: var(--ice); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.next-done:active { transform: scale(0.94); }
+.next.finishing { animation: finish 0.45s both; }
+@keyframes finish { 40% { box-shadow: 0 0 40px color-mix(in srgb, var(--c) 60%, transparent); } to { opacity: 0; transform: scale(0.96) translateY(-6px); } }

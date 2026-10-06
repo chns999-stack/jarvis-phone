@@ -6,7 +6,7 @@
  */
 const RELAY = 'https://ntfy.sh'
 // Bumped with every release; version.json on the site says what's current.
-const VERSION = 6
+const VERSION = 7
 const $ = (s) => document.querySelector(s)
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
@@ -710,7 +710,7 @@ function renderNext() {
   if (!t) return (el.innerHTML = '')
   const due = dueOf(t.due)
   el.innerHTML = `<div class="next" style="--c:${CAT[t.category] ?? '#19e3ff'}">
-    <div class="next-label">NEXT UP</div>
+    <div class="next-top"><div class="next-label">NEXT UP</div><button class="next-done" data-done="${esc(t.id)}" aria-label="Mark ${esc(t.title)} done">${CHECK}<span>Done</span></button></div>
     <div class="next-title">${esc(t.title)}</div>
     <div class="next-meta">${due ? `<span class="due ${due.cls}">${esc(due.text)}</span>` : '<span>No due date</span>'}<span>${esc(t.category)}</span>${open.length > 1 ? `<span>+${open.length - 1} more</span>` : ''}</div>
   </div>`
@@ -936,3 +936,17 @@ setupAdd()
 setupNotify()
 renderNotifyCard()
 renderList()
+
+// Done straight from the NEXT UP card: tick it, then the card moves on to the next one.
+$('#next').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-done]')
+  if (!b) return
+  const t = list?.tasks.find((x) => x.id === b.dataset.done)
+  if (!t) return
+  b.closest('.next').classList.add('finishing')
+  setTimeout(() => {
+    toggleTask(t)
+    const after = (list?.tasks ?? []).filter((x) => !isDone(x))
+    toast(after.length ? `Nice. ${after.length} to go` : 'Nice. That was the last one')
+  }, 450)
+})
